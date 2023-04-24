@@ -13,7 +13,7 @@ namespace LAMMPS_NS {
 namespace FIXDXA_NS {
   static constexpr double EPSILON = 1e-12;
 
-  template <typename T> class Vector3 : std::array<T, 3> {
+  template <typename T> class Vector3 : public std::array<T, 3> {
    public:
     Vector3() = default;
     Vector3(T x, T y, T z) : std::array<T, 3>{{x, y, z}} {};
@@ -21,8 +21,6 @@ namespace FIXDXA_NS {
     constexpr inline T x() const { return (*this)[0]; }
     constexpr inline T y() const { return (*this)[1]; }
     constexpr inline T z() const { return (*this)[2]; }
-    constexpr inline T operator[](size_t index) const { return (*this)[index]; }
-    inline T &operator[](size_t index) { return (*this)[index]; }
 
     T lengthSquared() const { return x() * x() + y() * y() + z() * z(); }
     T length() const { return sqrt(lengthSquared()); }
@@ -63,7 +61,7 @@ namespace FIXDXA_NS {
   };
   using Vector3d = Vector3<double>;
 
-  template <typename T> class Matrix3 : std::array<Vector3<T>, 3> {
+  template <typename T> class Matrix3 : public std::array<Vector3<T>, 3> {
    public:
     Matrix3() = default;
     Matrix3(T e00, T e01, T e02, T e10, T e11, T e12, T e20, T e21, T e22) :
@@ -140,7 +138,7 @@ namespace FIXDXA_NS {
     inline Matrix3 inverse() const
     {
       T det = determinant();
-      assert(std::abs(det) <= EPSILON);
+      assert(std::abs(det) >= EPSILON);
       return Matrix3<T>(((*this)[1][1] * (*this)[2][2] - (*this)[1][2] * (*this)[2][1]) / det,
                         ((*this)[2][0] * (*this)[1][2] - (*this)[1][0] * (*this)[2][2]) / det,
                         ((*this)[1][0] * (*this)[2][1] - (*this)[1][1] * (*this)[2][0]) / det,
