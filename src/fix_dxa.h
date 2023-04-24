@@ -1,7 +1,7 @@
 
 #ifdef FIX_CLASS
 // clang-format off
-FixStyle(dxa,FixDXA);
+FixStyle(dxa,FIXDXA_NS::FixDXA);
 // clang-format on
 #else
 #ifndef LMP_FIX_DXA_H
@@ -10,71 +10,52 @@ FixStyle(dxa,FixDXA);
 #include "fix.h"
 
 namespace LAMMPS_NS {
-template <typename T> class Vector3 {
- public:
-  Vector3(){};
-  Vector3(T x, T y, T z) : _data{x, y, z} {};
+namespace FIXDXA_NS {
+  template <typename T> class Vector3 : std::array<T, 3> {
+   public:
+    Vector3() = default;
+    Vector3(T x, T y, T z) : std::array<T, 3>{{x, y, z}} {};
 
-  T x() const { return _data[0]; }
-  T y() const { return _data[1]; }
-  T z() const { return _data[2]; }
-  T operator[](size_t index) const { return _data[index]; }
-  T &operator[](size_t index) { return _data[index]; }
+    constexpr inline T x() const { return (*this)[0]; }
+    constexpr inline T y() const { return (*this)[1]; }
+    constexpr inline T z() const { return (*this)[2]; }
+    constexpr inline T operator[](size_t index) const { return (*this)[index]; }
+    inline T &operator[](size_t index) { return (*this)[index]; }
 
-  T lengthSquared() const { return x() * x() + y() * y() + z() * z(); }
-  T length() const { return sqrt(lengthSquared()); }
-  bool isZero(T eps)
-  {
-    for (auto v : _data) {
-      if (std::abs(v) >= eps) { return false; }
+    T lengthSquared() const { return x() * x() + y() * y() + z() * z(); }
+    T length() const { return sqrt(lengthSquared()); }
+
+    bool isZero(T eps)
+    {
+      for (auto v : *this) {
+        if (std::abs(v) >= eps) { return false; }
+      }
+      return true;
+    };
+    constexpr Vector3 operator-(const Vector3 &v) const
+    {
+      return Vector3(x() - v.x(), y() - v.y(), z() - v.z());
     }
-    return true;
+    constexpr Vector3 operator+(const Vector3 &v) const
+    {
+      return Vector3(x() + v.x(), y() + v.y(), z() + v.z());
+    }
+    friend Vector3 operator*(double d, const Vector3 &v)
+    {
+      return Vector3(d * v[0], d * v[1], d * v[2]);
+    }
+    constexpr Vector3 operator-() const { return Vector3(-x(), -y(), -z()); }
   };
-  Vector3 operator-(const Vector3 &v) const
-  {
-    return Vector3(x() - v.x(), y() - v.y(), z() - v.z());
-  }
-  Vector3 operator+(const Vector3 &v) const
-  {
-    return Vector3(x() + v.x(), y() + v.y(), z() + v.z());
-  }
-  friend Vector3 operator*(double d, const Vector3 &v)
-  {
-    return Vector3(d * v[0], d * v[1], d * v[2]);
-  }
-  Vector3 operator-() const { return Vector3(-x(), -y(), -z()); }
 
- private:
-  T _data[3] = {0, 0, 0};
-};
+  template <typename T> class Matrix3 : std::array<Vector3<T>, 3> {
+   public:
+    Matrix3() = default;
+    Matrix3(T e00, T e01, T e02, T e10, T e11, T e12, T e20, T e21, T e22) :
+        std::array<Vector3<T>, 3>{
+            {Vector3<T>(e00, e10, e20), Vector3<T>(e01, e11, e21), Vector3<T>(e02, e12, e22)}} {};
 
-class FixDXA : public Fix {
- public:
-  FixDXA(class LAMMPS *, int, char **);
-
-  void end_of_step() override;
-
-  void init() override;
-
-  void init_list(int, NeighList *) override;
-
-  int setmask() override;
-
-  void setup(int) override;
-
-  const unsigned char VERSION = 1;
-
-  enum StructureType { FCC = 0, HCP, BCC, CUBIC_DIA, HEX_DIA, OTHER };
-
- protected:
-  struct CNANeighbor {
-    Vector3<double> xyz = {0, 0, 0};
-    double lengthSq = 0;
-    int idx = -1;
-    int neighIdx = -1;
-
-    bool operator<(const CNANeighbor &o) const { return lengthSq < o.lengthSq; }
-    bool operator>(const CNANeighbor &o) const { return lengthSq > o.lengthSq; }
+    constexpr inline T operator()(size_t row, size_t col) const { return (*this)[col][row]; }
+    inline T &operator()(size_t row, size_t col) { return (*this)[col][row]; }
   };
 
   template <size_t size> class NeighborBondArray {
@@ -130,7 +111,6 @@ class FixDXA : public Fix {
       unsigned int nib[32];
       int nibn = 0;
       unsigned int ni1b = 1;
-      // const int numNeighbors = countCommonNeighbors(n);
       for (int ni1 = 0; ni1 < nn; ni1++, ni1b <<= 1) {
         if (_data[n] & ni1b) {
           unsigned int b = _data[n] & _data[ni1];
@@ -143,6 +123,7 @@ class FixDXA : public Fix {
       return numBonds;
     }
 
+    // refactor this to work with arrays!
     static int getAdjacentBonds(unsigned int atom, unsigned int *bondsToProcess, int &numBonds,
                                 unsigned int &atomsToProcess, unsigned int &atomsProcessed)
     {
@@ -194,14 +175,70 @@ class FixDXA : public Fix {
     std::array<uint32_t, size> _data;
   };
 
-  bool getCNANeighbors(std::vector<CNANeighbor> &, const int, const int) const;
+  template <size_t size> struct CoordinationStructure {
+    int numNeighbors;
+    std::vector<Vector3<double>> latticeVectors;
+    NeighborBondArray<size> neighborArray;
+    std::array<int, size> cnaSignatures;
+    std::array<std::array<int, 2>, size> commonNeighbors;
+  };
 
-  void identifyCrystalStructure() const;
+  template <size_t size> struct SymmetryPermutation {
+    Matrix3<double> transformation;
+    std::array<int, size> permutation;
+    std::vector<int> product;
+    std::vector<int> inverseProduct;
+  };
+  template <size_t size> struct LatticeStructure {
+    const CoordinationStructure<size> *coordStructure;
+    std::vector<Vector3<double>> latticeVectors;
+    Matrix3<double> primitiveCell;
+    Matrix3<double> primitiveCellInverse;
+    int maxNeighbors;
+    std::vector<SymmetryPermutation<size>> permutations;
+  };
 
-  StructureType _inputStructure;
-  class NeighList *_neighList = nullptr;
-  static constexpr size_t _maxNeighCount = 16;
-};
+  class FixDXA : public Fix {
+   public:
+    FixDXA(class LAMMPS *, int, char **);
+
+    void end_of_step() override;
+
+    void init() override;
+
+    void init_list(int, NeighList *) override;
+
+    int setmask() override;
+
+    void setup(int) override;
+
+    const unsigned char VERSION = 1;
+
+    enum StructureType { BCC = 0, CUBIC_DIA, FCC, HCP, HEX_DIA, OTHER, MAXSTRUCTURECOUNT };
+
+   protected:
+    struct CNANeighbor {
+      Vector3<double> xyz = {0, 0, 0};
+      double lengthSq = 0;
+      int idx = -1;
+      int neighIdx = -1;
+
+      bool operator<(const CNANeighbor &o) const { return lengthSq < o.lengthSq; }
+      bool operator>(const CNANeighbor &o) const { return lengthSq > o.lengthSq; }
+    };
+
+    bool getCNANeighbors(std::vector<CNANeighbor> &, const int, const int) const;
+
+    void identifyCrystalStructure() const;
+
+    StructureType _inputStructure;
+    class NeighList *_neighList = nullptr;
+    static constexpr size_t _maxNeighCount = 16;
+
+    static std::array<CoordinationStructure<_maxNeighCount>, MAXSTRUCTURECOUNT>
+        _coordinationStructures;
+  };
+}    // namespace FIXDXA_NS
 }    // namespace LAMMPS_NS
 
 #endif
