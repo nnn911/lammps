@@ -44,6 +44,325 @@ namespace FIXDXA_NS {
       _inputStructure = HEX_DIA;
     else
       error->all(FLERR, "Invalid input structure parameter for fix DXA");
+
+    static bool structuresInitialized = false;
+    if (!structuresInitialized) {
+      initializeStructures();
+      structuresInitialized = true;
+    }
+  }
+
+  template <typename iterator> void bitmapSort(iterator begin, iterator end, size_t size)
+  {
+    assert(size <= 32);
+    unsigned int bitmap = 0;
+    for (iterator pin = begin; pin != end; ++pin) { bitmap |= 1 << (*pin); }
+    iterator pout = begin;
+    for (int i = size - 1; i >= 0; i--)
+      if (bitmap & (1 << i)) *pout++ = i;
+    assert(pout == end);
+  }
+
+  std::array<CrystalStructure<FixDXA::_maxNeighCount>, FixDXA::MAXSTRUCTURECOUNT>
+      FixDXA::_crystalStructures;
+
+  void FixDXA::initializeStructures()
+  {
+    {
+      _crystalStructures[OTHER].numNeighbors = 0;
+    }
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Face centered cubic
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    {
+      CrystalStructure<_maxNeighCount> &crystalStructure = _crystalStructures[FCC];
+      crystalStructure.latticeVectors = {
+          Vector3d(0.5, 0.5, 0.0),   Vector3d(0.0, 0.5, 0.5),   Vector3d(0.5, 0.0, 0.5),
+          Vector3d(-0.5, -0.5, 0.0), Vector3d(0.0, -0.5, -0.5), Vector3d(-0.5, 0.0, -0.5),
+          Vector3d(-0.5, 0.5, 0.0),  Vector3d(0.0, -0.5, 0.5),  Vector3d(-0.5, 0.0, 0.5),
+          Vector3d(0.5, -0.5, 0.0),  Vector3d(0.0, 0.5, -0.5),  Vector3d(0.5, 0.0, -0.5)};
+
+      crystalStructure.numNeighbors = 12;
+      for (int n1 = 0; n1 < crystalStructure.numNeighbors; ++n1) {
+        crystalStructure.neighborArray.setNeighborBond(n1, n1, false);
+        for (int n2 = n1 + 1; n2 < crystalStructure.numNeighbors; ++n2) {
+          crystalStructure.neighborArray.setNeighborBond(
+              n1, n2,
+              ((crystalStructure.latticeVectors[n1] - crystalStructure.latticeVectors[n2])
+                   .length() < (sqrt(0.5f) + 1.0) * 0.5));
+        }
+        crystalStructure.cnaSignatures[n1] = 0;
+      }
+      crystalStructure.primitiveCell.column(0) = Vector3d(0.5, 0.5, 0.0);
+      crystalStructure.primitiveCell.column(1) = Vector3d(0.0, 0.5, 0.5);
+      crystalStructure.primitiveCell.column(2) = Vector3d(0.5, 0.0, 0.5);
+    }
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Hexagonal closed packing
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    {
+      CrystalStructure<_maxNeighCount> &crystalStructure = _crystalStructures[HCP];
+
+      crystalStructure.latticeVectors = {
+          Vector3d(sqrt(2.0) / 4.0, -sqrt(6.0) / 4.0, 0.0),
+          Vector3d(-sqrt(2.0) / 2.0, 0.0, 0.0),
+          Vector3d(-sqrt(2.0) / 4.0, sqrt(6.0) / 12.0, -sqrt(3.0) / 3.0),
+          Vector3d(sqrt(2.0) / 4.0, sqrt(6.0) / 12.0, -sqrt(3.0) / 3.0),
+          Vector3d(0.0, -sqrt(6.0) / 6.0, -sqrt(3.0) / 3.0),
+          Vector3d(-sqrt(2.0) / 4.0, sqrt(6.0) / 4.0, 0.0),
+          Vector3d(sqrt(2.0) / 4.0, sqrt(6.0) / 4.0, 0.0),
+          Vector3d(sqrt(2.0) / 2.0, 0.0, 0.0),
+          Vector3d(-sqrt(2.0) / 4.0, -sqrt(6.0) / 4.0, 0.0),
+          Vector3d(0.0, -sqrt(6.0) / 6.0, sqrt(3.0) / 3.0),
+          Vector3d(sqrt(2.0) / 4.0, sqrt(6.0) / 12.0, sqrt(3.0) / 3.0),
+          Vector3d(-sqrt(2.0) / 4.0, sqrt(6.0) / 12.0, sqrt(3.0) / 3.0),
+          Vector3d(0.0, sqrt(6.0) / 6.0, sqrt(3.0) / 3.0),
+          Vector3d(-sqrt(2.0) / 4.0, -sqrt(6.0) / 12.0, -sqrt(3.0) / 3.0),
+          Vector3d(sqrt(2.0) / 4.0, -sqrt(6.0) / 12.0, sqrt(3.0) / 3.0),
+          Vector3d(0.0, sqrt(6.0) / 6.0, -sqrt(3.0) / 3.0),
+          Vector3d(sqrt(2.0) / 4.0, -sqrt(6.0) / 12.0, -sqrt(3.0) / 3.0),
+          Vector3d(-sqrt(2.0) / 4.0, -sqrt(6.0) / 12.0, sqrt(3.0) / 3.0)};
+
+      crystalStructure.numNeighbors = 12;
+      for (int n1 = 0; n1 < crystalStructure.numNeighbors; n1++) {
+        crystalStructure.neighborArray.setNeighborBond(n1, n1, false);
+        for (int n2 = n1 + 1; n2 < crystalStructure.numNeighbors; n2++) {
+          crystalStructure.neighborArray.setNeighborBond(
+              n1, n2,
+              ((crystalStructure.latticeVectors[n1] - crystalStructure.latticeVectors[n2])
+                   .length() < (sqrt(0.5) + 1.0) * 0.5));
+        }
+        crystalStructure.cnaSignatures[n1] = (crystalStructure.latticeVectors[n1].z() == 0) ? 1 : 0;
+      }
+      crystalStructure.primitiveCell.column(0) = Vector3d(sqrt(0.5) / 2, -sqrt(6.0) / 4, 0.0);
+      crystalStructure.primitiveCell.column(1) = Vector3d(sqrt(0.5) / 2, sqrt(6.0) / 4, 0.0);
+      crystalStructure.primitiveCell.column(2) = Vector3d(0.0, 0.0, sqrt(8.0 / 6.0));
+    }
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Body centered cubic
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    {
+      CrystalStructure<_maxNeighCount> &crystalStructure = _crystalStructures[BCC];
+      crystalStructure.latticeVectors = {
+          Vector3d(0.5, 0.5, 0.5),    Vector3d(-0.5, 0.5, 0.5),  Vector3d(0.5, 0.5, -0.5),
+          Vector3d(-0.5, -0.5, 0.5),  Vector3d(0.5, -0.5, 0.5),  Vector3d(-0.5, 0.5, -0.5),
+          Vector3d(-0.5, -0.5, -0.5), Vector3d(0.5, -0.5, -0.5), Vector3d(1.0, 0.0, 0.0),
+          Vector3d(-1.0, 0.0, 0.0),   Vector3d(0.0, 1.0, 0.0),   Vector3d(0.0, -1.0, 0.0),
+          Vector3d(0.0, 0.0, 1.0),    Vector3d(0.0, 0.0, -1.0)};
+
+      crystalStructure.numNeighbors = 14;
+      for (int n1 = 0; n1 < crystalStructure.numNeighbors; ++n1) {
+        crystalStructure.neighborArray.setNeighborBond(n1, n1, false);
+        for (int n2 = n1 + 1; n2 < crystalStructure.numNeighbors; ++n2) {
+          crystalStructure.neighborArray.setNeighborBond(
+              n1, n2,
+              ((crystalStructure.latticeVectors[n1] - crystalStructure.latticeVectors[n2])
+                   .length() < (1.0 + sqrt(2.0)) * 0.5));
+        }
+        crystalStructure.cnaSignatures[n1] = (n1 < 8) ? 0 : 1;
+      }
+      crystalStructure.primitiveCell.column(0) = Vector3d(1.0, 0.0, 0.0);
+      crystalStructure.primitiveCell.column(1) = Vector3d(0.0, 1.0, 0.0);
+      crystalStructure.primitiveCell.column(2) = Vector3d(0.5, 0.5, 0.5);
+    }
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Cubic diamond
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    {
+      CrystalStructure<_maxNeighCount> &crystalStructure = _crystalStructures[CUBIC_DIA];
+      crystalStructure.latticeVectors = {
+          Vector3d(0.25, 0.25, 0.25),   Vector3d(0.25, -0.25, -0.25), Vector3d(-0.25, -0.25, 0.25),
+          Vector3d(-0.25, 0.25, -0.25), Vector3d(0, -0.5, 0.5),       Vector3d(0.5, 0.5, 0),
+          Vector3d(-0.5, 0, 0.5),       Vector3d(-0.5, 0.5, 0),       Vector3d(0, 0.5, 0.5),
+          Vector3d(0.5, -0.5, 0),       Vector3d(0.5, 0, 0.5),        Vector3d(0.5, 0, -0.5),
+          Vector3d(-0.5, -0.5, 0),      Vector3d(0, -0.5, -0.5),      Vector3d(0, 0.5, -0.5),
+          Vector3d(-0.5, 0, -0.5),      Vector3d(0.25, -0.25, 0.25),  Vector3d(0.25, 0.25, -0.25),
+          Vector3d(-0.25, 0.25, 0.25),  Vector3d(-0.25, -0.25, -0.25)};
+
+      crystalStructure.numNeighbors = 16;
+
+      for (int n1 = 0; n1 < 16; ++n1) {
+        crystalStructure.neighborArray.setNeighborBond(n1, n1, false);
+        double cutoff = (n1 < 4) ? (sqrt(3.0) * 0.25 + sqrt(0.5)) / 2 : (1.0 + sqrt(0.5)) / 2;
+        double cutoffSquared = cutoff * cutoff;
+        for (int n2 = n1 + 1; n2 < 4; ++n2) {
+          crystalStructure.neighborArray.setNeighborBond(n1, n2, false);
+        }
+        for (int n2 = std::max(n1 + 1, 4); n2 < crystalStructure.numNeighbors; ++n2) {
+          crystalStructure.neighborArray.setNeighborBond(
+              n1, n2,
+              ((crystalStructure.latticeVectors[n1] - crystalStructure.latticeVectors[n2])
+                   .lengthSquared() < cutoffSquared));
+        }
+        crystalStructure.cnaSignatures[n1] = (n1 < 4) ? 0 : 1;
+      }
+      crystalStructure.primitiveCell.column(0) = Vector3d(0.5, 0.5, 0.0);
+      crystalStructure.primitiveCell.column(1) = Vector3d(0.0, 0.5, 0.5);
+      crystalStructure.primitiveCell.column(2) = Vector3d(0.5, 0.0, 0.5);
+    }
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Hexagonal diamond
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    {
+      CrystalStructure<_maxNeighCount> &crystalStructure = _crystalStructures[HEX_DIA];
+      crystalStructure.latticeVectors = {
+          Vector3d(-sqrt(2.0) / 4, sqrt(3.0 / 2.0) / 6, -sqrt(3.0) / 12),
+          Vector3d(0, -sqrt(3.0 / 2.0) / 3, -sqrt(3.0) / 12),
+          Vector3d(sqrt(2.0) / 4, sqrt(3.0 / 2.0) / 6, -sqrt(3.0) / 12),
+          Vector3d(0, 0, sqrt(3.0) / 4),
+
+          Vector3d(sqrt(2.0) / 4.0, -sqrt(6.0) / 4.0, 0.0),
+          Vector3d(-sqrt(2.0) / 2.0, 0.0, 0.0),
+          Vector3d(-sqrt(2.0) / 4.0, sqrt(6.0) / 4.0, 0.0),
+          Vector3d(sqrt(2.0) / 4.0, sqrt(6.0) / 4.0, 0.0),
+          Vector3d(sqrt(2.0) / 2.0, 0.0, 0.0),
+          Vector3d(-sqrt(2.0) / 4.0, -sqrt(6.0) / 4.0, 0.0),
+          Vector3d(-sqrt(2.0) / 4.0, sqrt(6.0) / 12.0, -sqrt(3.0) / 3.0),
+          Vector3d(sqrt(2.0) / 4.0, sqrt(6.0) / 12.0, -sqrt(3.0) / 3.0),
+          Vector3d(0.0, -sqrt(6.0) / 6.0, -sqrt(3.0) / 3.0),
+          Vector3d(0.0, -sqrt(6.0) / 6.0, sqrt(3.0) / 3.0),
+          Vector3d(sqrt(2.0) / 4.0, sqrt(6.0) / 12.0, sqrt(3.0) / 3.0),
+          Vector3d(-sqrt(2.0) / 4.0, sqrt(6.0) / 12.0, sqrt(3.0) / 3.0),
+
+          Vector3d(-sqrt(2.0) / 4, sqrt(3.0 / 2.0) / 6, sqrt(3.0) / 12),
+          Vector3d(0, -sqrt(3.0 / 2.0) / 3, sqrt(3.0) / 12),
+          Vector3d(sqrt(2.0) / 4, sqrt(3.0 / 2.0) / 6, sqrt(3.0) / 12),
+          Vector3d(0, 0, -sqrt(3.0) / 4),
+
+          Vector3d(-sqrt(2.0) / 4, -sqrt(3.0 / 2.0) / 6, -sqrt(3.0) / 12),
+          Vector3d(0, sqrt(3.0 / 2.0) / 3, -sqrt(3.0) / 12),
+          Vector3d(sqrt(2.0) / 4, -sqrt(3.0 / 2.0) / 6, -sqrt(3.0) / 12),
+
+          Vector3d(-sqrt(2.0) / 4, -sqrt(3.0 / 2.0) / 6, sqrt(3.0) / 12),
+          Vector3d(0, sqrt(3.0 / 2.0) / 3, sqrt(3.0) / 12),
+          Vector3d(sqrt(2.0) / 4, -sqrt(3.0 / 2.0) / 6, sqrt(3.0) / 12),
+
+          Vector3d(0.0, sqrt(6.0) / 6.0, sqrt(3.0) / 3.0),
+          Vector3d(-sqrt(2.0) / 4.0, -sqrt(6.0) / 12.0, -sqrt(3.0) / 3.0),
+          Vector3d(sqrt(2.0) / 4.0, -sqrt(6.0) / 12.0, sqrt(3.0) / 3.0),
+          Vector3d(0.0, sqrt(6.0) / 6.0, -sqrt(3.0) / 3.0),
+          Vector3d(sqrt(2.0) / 4.0, -sqrt(6.0) / 12.0, -sqrt(3.0) / 3.0),
+          Vector3d(-sqrt(2.0) / 4.0, -sqrt(6.0) / 12.0, sqrt(3.0) / 3.0)};
+
+      crystalStructure.numNeighbors = 16;
+      for (int n1 = 0; n1 < 16; ++n1) {
+        crystalStructure.neighborArray.setNeighborBond(n1, n1, false);
+        double cutoff = (n1 < 4) ? (sqrt(3.0) * 0.25 + sqrt(0.5)) / 2 : (1.0 + sqrt(0.5)) / 2;
+        double cutoffSquared = cutoff * cutoff;
+        for (int n2 = n1 + 1; n2 < 4; ++n2) {
+          crystalStructure.neighborArray.setNeighborBond(n1, n2, false);
+        }
+        for (int n2 = std::max(n1 + 1, 4); n2 < 16; ++n2) {
+          crystalStructure.neighborArray.setNeighborBond(
+              n1, n2,
+              ((crystalStructure.latticeVectors[n1] - crystalStructure.latticeVectors[n2])
+                   .lengthSquared() < cutoffSquared));
+        }
+        crystalStructure.cnaSignatures[n1] =
+            (n1 < 4) ? 0 : ((crystalStructure.latticeVectors[n1].z() == 0) ? 2 : 1);
+      }
+      crystalStructure.primitiveCell.column(0) = Vector3d(sqrt(0.5) / 2, -sqrt(6.0) / 4, 0.0);
+      crystalStructure.primitiveCell.column(1) = Vector3d(sqrt(0.5) / 2, sqrt(6.0) / 4, 0.0);
+      crystalStructure.primitiveCell.column(2) = Vector3d(0.0, 0.0, sqrt(8.0 / 6.0));
+    }
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Generate symmetries
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    {
+      for (auto &crystalStructure : _crystalStructures) {
+        if (crystalStructure.latticeVectors.empty()) { continue; }
+
+        // Find 3 non-coplanar lattice vectors
+        std::array<int, 3> nindices;
+        Matrix3d mat1;
+        for (int i = 0, n = 0; i < crystalStructure.numNeighbors && n < 3; ++i) {
+          mat1.column(n) = crystalStructure.latticeVectors[i];
+          if (n == 1) {
+            if (mat1.column(0).cross(mat1.column(1)).lengthSquared() <= EPSILON) { continue; }
+          } else if (n == 2) {
+            if (std::abs(mat1.determinant()) < EPSILON) { continue; }
+          }
+          nindices[n++] = i;
+        }
+        assert(std::abs(mat1.determinant()) > EPSILON);
+        Matrix3d mat1Inv = mat1.inverse();
+
+        // find symmetries
+        std::vector<int> permutation(crystalStructure.latticeVectors.size());
+        assert(permutation.size() == crystalStructure.latticeVectors.size());
+        std::vector<int> lastPermutation(crystalStructure.latticeVectors.size(), -1);
+        assert(lastPermutation.size() == crystalStructure.latticeVectors.size());
+        std::iota(permutation.begin(), permutation.end(), 0);
+        SymmetryPermutation<_maxNeighCount> symmetryPermutation;
+        Matrix3d mat2;
+        do {
+          int changedFrom =
+              std::mismatch(permutation.begin(), permutation.end(), lastPermutation.begin()).first -
+              permutation.begin();
+          assert(changedFrom < crystalStructure.numNeighbors);
+          std::copy(permutation.begin(), permutation.end(), lastPermutation.begin());
+          if (changedFrom <= nindices[2]) {
+            mat2.column(0) = crystalStructure.latticeVectors[permutation[nindices[0]]];
+            mat2.column(1) = crystalStructure.latticeVectors[permutation[nindices[1]]];
+            mat2.column(2) = crystalStructure.latticeVectors[permutation[nindices[2]]];
+            symmetryPermutation.transformation = mat2 * mat1Inv;
+            if (!symmetryPermutation.transformation.isOrthogonal(EPSILON)) {
+              bitmapSort(permutation.begin() + nindices[2] + 1, permutation.end(),
+                         permutation.size());
+              continue;
+            }
+            changedFrom = 0;
+          }
+          int sortFrom = nindices[2];
+          int invalidFrom;
+          for (invalidFrom = changedFrom; invalidFrom < crystalStructure.numNeighbors;
+               invalidFrom++) {
+            Vector3d v =
+                symmetryPermutation.transformation * crystalStructure.latticeVectors[invalidFrom];
+            if (!v.equals(crystalStructure.latticeVectors[permutation[invalidFrom]], EPSILON))
+              break;
+          }
+          if (invalidFrom == crystalStructure.numNeighbors) {
+            std::copy(permutation.begin(), permutation.begin() + crystalStructure.numNeighbors,
+                      symmetryPermutation.permutation.begin());
+            for (const auto &entry : crystalStructure.permutations) {
+              assert(!entry.transformation.equals(symmetryPermutation.transformation, EPSILON));
+            }
+            crystalStructure.permutations.push_back(symmetryPermutation);
+          } else {
+            sortFrom = invalidFrom;
+          }
+          bitmapSort(permutation.begin() + sortFrom + 1, permutation.end(), permutation.size());
+        } while (std::next_permutation(permutation.begin(), permutation.end()));
+
+        assert(crystalStructure.permutations.size() >= 1);
+        assert(crystalStructure.permutations.front().transformation.equals(Matrix3d::Identity(),
+                                                                           EPSILON));
+        // Products of symmetry transformations
+        for (int s1 = 0; s1 < crystalStructure.permutations.size(); s1++) {
+          for (int s2 = 0; s2 < crystalStructure.permutations.size(); s2++) {
+            Matrix3d product = crystalStructure.permutations[s2].transformation *
+                crystalStructure.permutations[s1].transformation;
+            for (int i = 0; i < crystalStructure.permutations.size(); i++) {
+              if (crystalStructure.permutations[i].transformation.equals(product, EPSILON)) {
+                crystalStructure.permutations[s1].product.push_back(i);
+                break;
+              }
+            }
+            assert(crystalStructure.permutations[s1].product.size() == s2 + 1);
+            Matrix3d inverseProduct = crystalStructure.permutations[s2].transformation.inverse() *
+                crystalStructure.permutations[s1].transformation;
+            for (int i = 0; i < crystalStructure.permutations.size(); i++) {
+              if (crystalStructure.permutations[i].transformation.equals(product, EPSILON)) {
+                crystalStructure.permutations[s1].inverseProduct.push_back(i);
+                break;
+              }
+            }
+            assert(crystalStructure.permutations[s1].inverseProduct.size() == s2 + 1);
+          }
+        }
+      }
+    }
   }
 
   bool FixDXA::getCNANeighbors(std::vector<CNANeighbor> &neighborVectors, const int index,
@@ -122,7 +441,7 @@ namespace FIXDXA_NS {
           for (int m = 0; m < 4; ++m) {
             if (outIndex == 16) break;
             if (neighborVectors2[m].neighIdx == neighborVectors[n].idx &&
-                (neighborVectors[n].xyz + neighborVectors2[m].xyz).isZero(__DBL_EPSILON__)) {
+                (neighborVectors[n].xyz + neighborVectors2[m].xyz).isZero(EPSILON)) {
               continue;
             }
             neighborVectors[outIndex] = std::move(neighborVectors2[m]);
@@ -194,12 +513,8 @@ namespace FIXDXA_NS {
         }
         if (n421 == 12) {    // FCC
           crystalStructure[ii] = FCC;
-          // templateStartIndex = 0;
-          // templateEndIndex = 5;
         } else if (n421 == 6 && n422 == 6) {    // HCP
           crystalStructure[ii] = HCP;
-          // templateStartIndex = 5;
-          // templateEndIndex = 13;
         } else {
           continue;
         }

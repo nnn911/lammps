@@ -11,6 +11,8 @@ FixStyle(dxa,FIXDXA_NS::FixDXA);
 
 namespace LAMMPS_NS {
 namespace FIXDXA_NS {
+  static constexpr double EPSILON = 1e-12;
+
   template <typename T> class Vector3 : std::array<T, 3> {
    public:
     Vector3() = default;
@@ -32,6 +34,19 @@ namespace FIXDXA_NS {
       }
       return true;
     };
+
+    constexpr inline Vector3 cross(const Vector3 &v) const
+    {
+      return Vector3(y() * v.z() - z() * v.y(), z() * v.x() - x() * v.z(),
+                     x() * v.y() - y() * v.x());
+    }
+
+    constexpr inline bool equals(const Vector3 &v, T eps) const
+    {
+      return (std::abs(x() - v.x()) < eps) && std::abs(y() - v.y()) < eps &&
+          std::abs(z() - v.z()) < eps;
+    }
+
     constexpr Vector3 operator-(const Vector3 &v) const
     {
       return Vector3(x() - v.x(), y() - v.y(), z() - v.z());
@@ -46,6 +61,7 @@ namespace FIXDXA_NS {
     }
     constexpr Vector3 operator-() const { return Vector3(-x(), -y(), -z()); }
   };
+  using Vector3d = Vector3<double>;
 
   template <typename T> class Matrix3 : std::array<Vector3<T>, 3> {
    public:
@@ -54,9 +70,89 @@ namespace FIXDXA_NS {
         std::array<Vector3<T>, 3>{
             {Vector3<T>(e00, e10, e20), Vector3<T>(e01, e11, e21), Vector3<T>(e02, e12, e22)}} {};
 
+    static constexpr inline Matrix3 Identity()
+    {
+      return Matrix3((T) 1, (T) 0, (T) 0, (T) 0, (T) 1, (T) 0, (T) 0, (T) 0, (T) 1);
+    };
+
     constexpr inline T operator()(size_t row, size_t col) const { return (*this)[col][row]; }
     inline T &operator()(size_t row, size_t col) { return (*this)[col][row]; }
+
+    constexpr inline const Vector3<T> &operator()(size_t col) const { return (*this)[col]; }
+    inline Vector3<T> &column(size_t col) { return (*this)[col]; }
+    constexpr inline const Vector3<T> &column(size_t col) const { return (*this)[col]; }
+
+    friend constexpr inline Vector3<T> operator*(const Matrix3<T> &m, const Vector3<T> &v)
+    {
+      return Vector3<T>(m(0, 0) * v[0] + m(0, 1) * v[1] + m(0, 2) * v[2],
+                        m(1, 0) * v[0] + m(1, 1) * v[1] + m(1, 2) * v[2],
+                        m(2, 0) * v[0] + m(2, 1) * v[1] + m(2, 2) * v[2]);
+    }
+
+    friend constexpr inline Matrix3 operator*(const Matrix3<T> &a, const Matrix3<T> &b)
+    {
+      return Matrix3(a(0, 0) * b(0, 0) + a(0, 1) * b(1, 0) + a(0, 2) * b(2, 0),
+                     a(0, 0) * b(0, 1) + a(0, 1) * b(1, 1) + a(0, 2) * b(2, 1),
+                     a(0, 0) * b(0, 2) + a(0, 1) * b(1, 2) + a(0, 2) * b(2, 2),
+                     a(1, 0) * b(0, 0) + a(1, 1) * b(1, 0) + a(1, 2) * b(2, 0),
+                     a(1, 0) * b(0, 1) + a(1, 1) * b(1, 1) + a(1, 2) * b(2, 1),
+                     a(1, 0) * b(0, 2) + a(1, 1) * b(1, 2) + a(1, 2) * b(2, 2),
+                     a(2, 0) * b(0, 0) + a(2, 1) * b(1, 0) + a(2, 2) * b(2, 0),
+                     a(2, 0) * b(0, 1) + a(2, 1) * b(1, 1) + a(2, 2) * b(2, 1),
+                     a(2, 0) * b(0, 2) + a(2, 1) * b(1, 2) + a(2, 2) * b(2, 2));
+    }
+
+    inline bool equals(const Matrix3<T> &m, T eps) const
+    {
+      for (size_t i = 0; i < 3; i++) {
+        if (!((*this).column(i).equals(m.column(i), eps))) { return false; }
+      }
+      return true;
+    }
+
+    inline void setZero()
+    {
+      for (size_t col = 0; col < 3; col++) { (*this)[col] = {0, 0, 0}; }
+    }
+
+    constexpr inline T determinant() const
+    {
+      return (((*this)[0][0] * (*this)[1][1] - (*this)[0][1] * (*this)[1][0]) * ((*this)[2][2]) -
+              ((*this)[0][0] * (*this)[1][2] - (*this)[0][2] * (*this)[1][0]) * ((*this)[2][1]) +
+              ((*this)[0][1] * (*this)[1][2] - (*this)[0][2] * (*this)[1][1]) * ((*this)[2][0]));
+    }
+    constexpr inline bool isOrthogonal(T eps) const
+    {
+      return (std::abs((*this)[0][0] * (*this)[1][0] + (*this)[0][1] * (*this)[1][1] +
+                       (*this)[0][2] * (*this)[1][2]) <= eps) &&
+          (std::abs((*this)[0][0] * (*this)[2][0] + (*this)[0][1] * (*this)[2][1] +
+                    (*this)[0][2] * (*this)[2][2]) <= eps) &&
+          (std::abs((*this)[1][0] * (*this)[2][0] + (*this)[1][1] * (*this)[2][1] +
+                    (*this)[1][2] * (*this)[2][2]) <= eps) &&
+          (std::abs((*this)[0][0] * (*this)[0][0] + (*this)[0][1] * (*this)[0][1] +
+                    (*this)[0][2] * (*this)[0][2] - T(1)) <= eps) &&
+          (std::abs((*this)[1][0] * (*this)[1][0] + (*this)[1][1] * (*this)[1][1] +
+                    (*this)[1][2] * (*this)[1][2] - T(1)) <= eps) &&
+          (std::abs((*this)[2][0] * (*this)[2][0] + (*this)[2][1] * (*this)[2][1] +
+                    (*this)[2][2] * (*this)[2][2] - T(1)) <= eps);
+    }
+
+    inline Matrix3 inverse() const
+    {
+      T det = determinant();
+      assert(std::abs(det) <= EPSILON);
+      return Matrix3<T>(((*this)[1][1] * (*this)[2][2] - (*this)[1][2] * (*this)[2][1]) / det,
+                        ((*this)[2][0] * (*this)[1][2] - (*this)[1][0] * (*this)[2][2]) / det,
+                        ((*this)[1][0] * (*this)[2][1] - (*this)[1][1] * (*this)[2][0]) / det,
+                        ((*this)[2][1] * (*this)[0][2] - (*this)[0][1] * (*this)[2][2]) / det,
+                        ((*this)[0][0] * (*this)[2][2] - (*this)[2][0] * (*this)[0][2]) / det,
+                        ((*this)[0][1] * (*this)[2][0] - (*this)[0][0] * (*this)[2][1]) / det,
+                        ((*this)[0][1] * (*this)[1][2] - (*this)[1][1] * (*this)[0][2]) / det,
+                        ((*this)[0][2] * (*this)[1][0] - (*this)[0][0] * (*this)[1][2]) / det,
+                        ((*this)[0][0] * (*this)[1][1] - (*this)[1][0] * (*this)[0][1]) / det);
+    }
   };
+  using Matrix3d = Matrix3<double>;
 
   template <size_t size> class NeighborBondArray {
    public:
@@ -175,28 +271,52 @@ namespace FIXDXA_NS {
     std::array<uint32_t, size> _data;
   };
 
-  template <size_t size> struct CoordinationStructure {
-    int numNeighbors;
-    std::vector<Vector3<double>> latticeVectors;
-    NeighborBondArray<size> neighborArray;
-    std::array<int, size> cnaSignatures;
-    std::array<std::array<int, 2>, size> commonNeighbors;
-  };
-
   template <size_t size> struct SymmetryPermutation {
-    Matrix3<double> transformation;
+    Matrix3d transformation;
     std::array<int, size> permutation;
     std::vector<int> product;
     std::vector<int> inverseProduct;
   };
-  template <size_t size> struct LatticeStructure {
-    const CoordinationStructure<size> *coordStructure;
+
+  template <size_t size> struct CrystalStructure {
+    //Coordination
+    int numNeighbors;
+    NeighborBondArray<size> neighborArray;
+    std::array<int, size> cnaSignatures;
+    std::array<std::array<int, 2>, size> commonNeighbors;
+
+    // Lattice
     std::vector<Vector3<double>> latticeVectors;
-    Matrix3<double> primitiveCell;
-    Matrix3<double> primitiveCellInverse;
-    int maxNeighbors;
+    Matrix3d primitiveCell;
+    Matrix3d primitiveCellInverse;
+
+    // Symmetry
     std::vector<SymmetryPermutation<size>> permutations;
   };
+
+  // template <size_t size>
+  // struct CoordinationStructure {
+  //   int numNeighbors;
+  //   NeighborBondArray<size> neighborArray;
+  //   std::array<int, size> cnaSignatures;
+  //   std::array<std::array<int, 2>, size> commonNeighbors;
+  // };
+
+  // template <size_t size> struct SymmetryPermutation {
+  //   Matrix3d transformation;
+  //   std::array<int, size> permutation;
+  //   std::vector<int> product;
+  //   std::vector<int> inverseProduct;
+  // };
+
+  // template <size_t size> struct LatticeStructure {
+  //   const CoordinationStructure<size> *coordStructure;
+  //   std::vector<Vector3<double>> latticeVectors;
+  //   Matrix3d primitiveCell;
+  //   Matrix3d primitiveCellInverse;
+  //   int numNeighbors;
+  //   std::vector<SymmetryPermutation<size>> permutations;
+  // };
 
   class FixDXA : public Fix {
    public:
@@ -231,12 +351,16 @@ namespace FIXDXA_NS {
 
     void identifyCrystalStructure() const;
 
+    void initializeStructures();
+
     StructureType _inputStructure;
     class NeighList *_neighList = nullptr;
     static constexpr size_t _maxNeighCount = 16;
 
-    static std::array<CoordinationStructure<_maxNeighCount>, MAXSTRUCTURECOUNT>
-        _coordinationStructures;
+    // static std::array<CoordinationStructure<_maxNeighCount>, MAXSTRUCTURECOUNT>
+    //     _coordinationStructures;
+    // static std::array<LatticeStructure<_maxNeighCount>, MAXSTRUCTURECOUNT> _latticeStructures;
+    static std::array<CrystalStructure<_maxNeighCount>, MAXSTRUCTURECOUNT> _crystalStructures;
   };
 }    // namespace FIXDXA_NS
 }    // namespace LAMMPS_NS
