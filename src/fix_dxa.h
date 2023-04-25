@@ -1,3 +1,12 @@
+////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright 2022 OVITO GmbH, Germany
+//
+//  This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND,
+//  either express or implied. See the GPL or the MIT License for the specific language
+//  governing rights and limitations.
+//
+////////////////////////////////////////////////////////////////////////////////////////
 
 #ifdef FIX_CLASS
 // clang-format off
@@ -292,30 +301,6 @@ namespace FIXDXA_NS {
     std::vector<SymmetryPermutation<size>> permutations;
   };
 
-  // template <size_t size>
-  // struct CoordinationStructure {
-  //   int numNeighbors;
-  //   NeighborBondArray<size> neighborArray;
-  //   std::array<int, size> cnaSignatures;
-  //   std::array<std::array<int, 2>, size> commonNeighbors;
-  // };
-
-  // template <size_t size> struct SymmetryPermutation {
-  //   Matrix3d transformation;
-  //   std::array<int, size> permutation;
-  //   std::vector<int> product;
-  //   std::vector<int> inverseProduct;
-  // };
-
-  // template <size_t size> struct LatticeStructure {
-  //   const CoordinationStructure<size> *coordStructure;
-  //   std::vector<Vector3<double>> latticeVectors;
-  //   Matrix3d primitiveCell;
-  //   Matrix3d primitiveCellInverse;
-  //   int numNeighbors;
-  //   std::vector<SymmetryPermutation<size>> permutations;
-  // };
-
   class FixDXA : public Fix {
    public:
     FixDXA(class LAMMPS *, int, char **);
@@ -355,9 +340,6 @@ namespace FIXDXA_NS {
     class NeighList *_neighList = nullptr;
     static constexpr size_t _maxNeighCount = 16;
 
-    // static std::array<CoordinationStructure<_maxNeighCount>, MAXSTRUCTURECOUNT>
-    //     _coordinationStructures;
-    // static std::array<LatticeStructure<_maxNeighCount>, MAXSTRUCTURECOUNT> _latticeStructures;
     static std::array<CrystalStructure<_maxNeighCount>, MAXSTRUCTURECOUNT> _crystalStructures;
   };
 }    // namespace FIXDXA_NS

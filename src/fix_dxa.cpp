@@ -1,3 +1,12 @@
+////////////////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright 2022 OVITO GmbH, Germany
+//
+//  This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND,
+//  either express or implied. See the GPL or the MIT License for the specific language
+//  governing rights and limitations.
+//
+////////////////////////////////////////////////////////////////////////////////////////
 
 #include "fix_dxa.h"
 #include "atom.h"
@@ -408,7 +417,9 @@ namespace FIXDXA_NS {
       }
     }();
 
-    // adaptive scaling
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Adaptive neighbor cutoff
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     std::vector<CNANeighbor> neighborVectors;
     std::vector<CNANeighbor> neighborVectors1;
     std::vector<CNANeighbor> neighborVectors2;
@@ -487,8 +498,9 @@ namespace FIXDXA_NS {
         unreachable(lmp);
       }
 
-      // int templateStartIndex;
-      // int templateEndIndex;
+      //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Core CNA
+      //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
       if (_inputStructure == FCC || _inputStructure == HCP) {
         int n421 = 0;
         int n422 = 0;
@@ -592,7 +604,9 @@ namespace FIXDXA_NS {
     for (auto s : summary) { utils::logmesg(lmp, "\nstructure: {}", s); }
     utils::logmesg(lmp, "\n");
 
-    // Initialize permutation.
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Map neighbor crystal directions
+    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     std::array<int, _maxNeighCount> neighborMapping;
     std::iota(neighborMapping.begin(), neighborMapping.end(), 0);
     std::array<int, _maxNeighCount> previousMapping;
