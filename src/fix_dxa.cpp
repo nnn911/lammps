@@ -10,6 +10,7 @@
 
 #include "fix_dxa.h"
 #include "atom.h"
+#include "domain.h"
 #include "error.h"
 #include "neigh_list.h"
 #include "neighbor.h"
@@ -401,7 +402,7 @@ namespace FIXDXA_NS {
     return true;
   }
 
-  void FixDXA::identifyCrystalStructure() const
+  void FixDXA::identifyCrystalStructure()
   {
     // Number of neighbors to analyze.
     const int nn = [this]() {
@@ -425,192 +426,253 @@ namespace FIXDXA_NS {
     std::vector<CNANeighbor> neighborVectors2;
     NeighborBondArray<_maxNeighCount> neighborArray;
     const int inum = _neighList->inum;
-    std::vector<StructureType> crystalStructure;
-    crystalStructure.resize(inum, OTHER);
+    std::array<int, _maxNeighCount> cnaSignatures;
+    cnaSignatures.fill(-1);
+    std::vector<StructureType> structureType;
+    structureType.resize(inum, OTHER);
     double localCutoff = 0;
     double localScaling = 0;
+    _neighborIndices.clear();
+    _neighborIndices.resize(inum);
     for (int ii = 0; ii < inum; ++ii) {
-      localScaling = 0;
-      neighborArray.reset();
-      if (_inputStructure == FCC || _inputStructure == HCP) {
-        if (!getCNANeighbors(neighborVectors, ii, nn)) continue;
-        for (int n = 0; n < 12; ++n) { localScaling += sqrt(neighborVectors[n].lengthSq); }
-        localScaling /= 12;
-        localCutoff = localScaling * (1.0 + sqrt(2.0)) * 0.5;
-      } else if (_inputStructure == BCC) {
-        if (!getCNANeighbors(neighborVectors, ii, nn)) continue;
-        for (int n = 0; n < 8; ++n) { localScaling += sqrt(neighborVectors[n].lengthSq); }
-        localScaling /= 8;
-        localCutoff = localScaling / (sqrt(3.0) / 2.0) * 0.5 * (1.0 + sqrt(2.0));
-      } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
-        int outIndex = 4;
-        neighborVectors.resize(16);
-        if (!getCNANeighbors(neighborVectors1, ii, 4)) continue;
-        for (int n = 0; n < 4; ++n) {
-          neighborVectors[n] = std::move(neighborVectors1[n]);
-          if (!getCNANeighbors(neighborVectors2, neighborVectors[n].neighIdx, 4)) break;
-          for (int m = 0; m < 4; ++m) {
-            if (outIndex == 16) break;
-            if (neighborVectors2[m].neighIdx == neighborVectors[n].idx &&
-                (neighborVectors[n].xyz + neighborVectors2[m].xyz).isZero(EPSILON)) {
-              continue;
+      {
+        localScaling = 0;
+        neighborArray.reset();
+        if (_inputStructure == FCC || _inputStructure == HCP) {
+          if (!getCNANeighbors(neighborVectors, ii, nn)) continue;
+          for (int n = 0; n < 12; ++n) { localScaling += sqrt(neighborVectors[n].lengthSq); }
+          localScaling /= 12;
+          localCutoff = localScaling * (1.0 + sqrt(2.0)) * 0.5;
+        } else if (_inputStructure == BCC) {
+          if (!getCNANeighbors(neighborVectors, ii, nn)) continue;
+          for (int n = 0; n < 8; ++n) { localScaling += sqrt(neighborVectors[n].lengthSq); }
+          localScaling /= 8;
+          localCutoff = localScaling / (sqrt(3.0) / 2.0) * 0.5 * (1.0 + sqrt(2.0));
+        } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
+          int outIndex = 4;
+          neighborVectors.resize(16);
+          if (!getCNANeighbors(neighborVectors1, ii, 4)) continue;
+          for (int n = 0; n < 4; ++n) {
+            neighborVectors[n] = std::move(neighborVectors1[n]);
+            if (!getCNANeighbors(neighborVectors2, neighborVectors[n].neighIdx, 4)) break;
+            for (int m = 0; m < 4; ++m) {
+              if (outIndex == 16) break;
+              if (neighborVectors2[m].neighIdx == neighborVectors[n].idx &&
+                  (neighborVectors[n].xyz + neighborVectors2[m].xyz).isZero(EPSILON)) {
+                continue;
+              }
+              neighborVectors[outIndex] = std::move(neighborVectors2[m]);
+              neighborVectors[outIndex].xyz =
+                  neighborVectors[outIndex].xyz + neighborVectors[n].xyz;
+              neighborVectors[outIndex].lengthSq = neighborVectors[outIndex].xyz.lengthSquared();
+              neighborArray.setNeighborBond(n, outIndex);
+              outIndex++;
             }
-            neighborVectors[outIndex] = std::move(neighborVectors2[m]);
-            neighborVectors[outIndex].xyz = neighborVectors[outIndex].xyz + neighborVectors[n].xyz;
-            neighborVectors[outIndex].lengthSq = neighborVectors[outIndex].xyz.lengthSquared();
-            neighborArray.setNeighborBond(n, outIndex);
-            outIndex++;
+            if (outIndex != n * 3 + 7) break;
           }
-          if (outIndex != n * 3 + 7) break;
+          if (outIndex != 16) continue;
+
+          for (int n = 4; n < 16; n++) localScaling += sqrt(neighborVectors[n].lengthSq);
+          localScaling /= 12;
+          localCutoff = localScaling * 1.2071068;
+
+        } else {
+          unreachable(lmp);
         }
-        if (outIndex != 16) continue;
-
-        for (int n = 4; n < 16; n++) localScaling += sqrt(neighborVectors[n].lengthSq);
-        localScaling /= 12;
-        localCutoff = localScaling * 1.2071068;
-
-      } else {
-        unreachable(lmp);
       }
 
-      double localCutoffSquared = localCutoff * localCutoff;
-      // Compute common neighbor bit-flag array.
-      if (_inputStructure == FCC || _inputStructure == HCP || _inputStructure == BCC) {
-        for (int n1 = 0; n1 < nn; ++n1) {
-          neighborArray.setNeighborBond(n1, n1, false);
-          for (int n2 = n1 + 1; n2 < nn; ++n2) {
-            auto v = neighborVectors[n1].xyz - neighborVectors[n2].xyz;
-            if ((neighborVectors[n1].xyz - neighborVectors[n2].xyz).lengthSquared() <=
-                localCutoffSquared) {
-              neighborArray.setNeighborBond(n1, n2);
+      {
+        double localCutoffSquared = localCutoff * localCutoff;
+        // Compute common neighbor bit-flag array.
+        if (_inputStructure == FCC || _inputStructure == HCP || _inputStructure == BCC) {
+          for (int n1 = 0; n1 < nn; ++n1) {
+            neighborArray.setNeighborBond(n1, n1, false);
+            for (int n2 = n1 + 1; n2 < nn; ++n2) {
+              auto v = neighborVectors[n1].xyz - neighborVectors[n2].xyz;
+              if ((neighborVectors[n1].xyz - neighborVectors[n2].xyz).lengthSquared() <=
+                  localCutoffSquared) {
+                neighborArray.setNeighborBond(n1, n2);
+              }
             }
           }
+        } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
+          for (int n1 = 4; n1 < nn; ++n1) {
+            for (int n2 = n1 + 1; n2 < nn; ++n2)
+              if ((neighborVectors[n1].xyz - neighborVectors[n2].xyz).lengthSquared() <=
+                  localCutoffSquared) {
+                neighborArray.setNeighborBond(n1, n2);
+              }
+          }
+        } else {
+          unreachable(lmp);
         }
-      } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
-        for (int n1 = 4; n1 < nn; ++n1) {
-          for (int n2 = n1 + 1; n2 < nn; ++n2)
-            if ((neighborVectors[n1].xyz - neighborVectors[n2].xyz).lengthSquared() <=
-                localCutoffSquared) {
-              neighborArray.setNeighborBond(n1, n2);
-            }
-        }
-      } else {
-        unreachable(lmp);
       }
 
       //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
       // Core CNA
       //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-      if (_inputStructure == FCC || _inputStructure == HCP) {
-        int n421 = 0;
-        int n422 = 0;
-        for (int ni = 0; ni < nn; ++ni) {
+      {
+        if (_inputStructure == FCC || _inputStructure == HCP) {
+          int n421 = 0;
+          int n422 = 0;
+          for (int ni = 0; ni < nn; ++ni) {
 
-          int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
-          if (numCommonNeighbors != 4) break;
+            int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
+            if (numCommonNeighbors != 4) break;
 
-          std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
-          neighborPairBonds.fill(0);
-          int numNeighborBonds = neighborArray.findNeighborBonds(ni, neighborPairBonds, nn);
-          if (numNeighborBonds != 2) break;
-          int maxChainLength = NeighborBondArray<_maxNeighCount>::calcMaxChainLength(
-              numNeighborBonds, neighborPairBonds);
-          if (maxChainLength == 1) {
-            n421++;
-          } else if (maxChainLength == 2) {
-            n422++;
+            std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
+            neighborPairBonds.fill(0);
+            int numNeighborBonds = neighborArray.findNeighborBonds(ni, neighborPairBonds, nn);
+            if (numNeighborBonds != 2) break;
+            int maxChainLength = NeighborBondArray<_maxNeighCount>::calcMaxChainLength(
+                numNeighborBonds, neighborPairBonds);
+            if (maxChainLength == 1) {
+              cnaSignatures[ni] = 0;
+              n421++;
+            } else if (maxChainLength == 2) {
+              cnaSignatures[ni] = 1;
+              n422++;
+            } else {
+              break;
+            }
+          }
+          if (n421 == 12) {    // FCC
+            structureType[ii] = FCC;
+          } else if (n421 == 6 && n422 == 6) {    // HCP
+            structureType[ii] = HCP;
           } else {
+            continue;
+          }
+        } else if (_inputStructure == BCC) {
+          int n444 = 0;
+          int n666 = 0;
+          for (int ni = 0; ni < nn; ni++) {
+
+            // Determine number of neighbors the two atoms have in common.
+            unsigned int commonNeighbors;
+            int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
+            if (numCommonNeighbors != 4 && numCommonNeighbors != 6) { break; }
+
+            // Determine the number of bonds among the common neighbors.
+            std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
+            int numNeighborBonds = neighborArray.findNeighborBonds(ni, neighborPairBonds, nn);
+            if (numNeighborBonds != 4 && numNeighborBonds != 6) { break; }
+
+            // Determine the number of bonds in the longest continuous chain.
+            int maxChainLength = NeighborBondArray<_maxNeighCount>::calcMaxChainLength(
+                numNeighborBonds, neighborPairBonds);
+            if (numCommonNeighbors == 4 && numNeighborBonds == 4 && maxChainLength == 4) {
+              cnaSignatures[ni] = 1;
+              n444++;
+            } else if (numCommonNeighbors == 6 && numNeighborBonds == 6 && maxChainLength == 6) {
+              cnaSignatures[ni] = 0;
+              n666++;
+            } else {
+              break;
+            }
+          }
+          if (n666 != 8 || n444 != 6) { continue; }
+          structureType[ii] = BCC;
+        } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
+          int numCommonNeighbors = 3;
+          for (int ni = 0; ni < 4; ni++) {
+            cnaSignatures[ni] = 0;
+            int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
+            if (numCommonNeighbors != 3) { break; }
+          }
+          if (numCommonNeighbors != 3) { continue; }
+          int n543 = 0;
+          int n544 = 0;
+          for (int ni = 4; ni < nn; ni++) {
+            unsigned int commonNeighbors;
+            int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
+            if (numCommonNeighbors != 5) { break; }
+
+            std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
+            int numNeighborBonds = neighborArray.findNeighborBonds(ni, neighborPairBonds, nn);
+            if (numNeighborBonds != 4) { break; }
+
+            int maxChainLength = NeighborBondArray<_maxNeighCount>::calcMaxChainLength(
+                numNeighborBonds, neighborPairBonds);
+            if (maxChainLength == 3) {
+              cnaSignatures[ni] = 1;
+              n543++;
+            } else if (maxChainLength == 4) {
+              cnaSignatures[ni] = 2;
+              n544++;
+            } else
+              break;
+          }
+          if (n543 == 12) {
+            structureType[ii] = CUBIC_DIA;
+          } else if (n543 == 6 && n544 == 6) {
+            structureType[ii] = HEX_DIA;
+          } else {
+            continue;
+          }
+        } else {
+          unreachable(lmp);
+        }
+      }
+      //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      // Map neighbor crystal directions
+      //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      {
+        std::array<int, _maxNeighCount> neighborMapping;
+        std::iota(neighborMapping.begin(), neighborMapping.end(), 0);
+        std::array<int, _maxNeighCount> previousMapping;
+        std::fill(previousMapping.begin(), previousMapping.end(), -1);
+        const auto &crystalStructure = _crystalStructures[_inputStructure];
+        while (true) {
+          int n1 = 0;
+          while (neighborMapping[n1] == previousMapping[n1]) { n1++; }
+          for (; n1 < nn; n1++) {
+            int atomNeighborIndex1 = neighborMapping[n1];
+            previousMapping[n1] = atomNeighborIndex1;
+            if (cnaSignatures[atomNeighborIndex1] != crystalStructure.cnaSignatures[n1]) { break; }
+            int n2;
+            for (n2 = 0; n2 < n1; n2++) {
+              int atomNeighborIndex2 = neighborMapping[n2];
+              if (neighborArray.areNeighbors(atomNeighborIndex1, atomNeighborIndex2) !=
+                  crystalStructure.neighborArray.areNeighbors(n1, n2)) {
+                break;
+              }
+            }
+            if (n2 != n1) { break; }
+          }
+          if (n1 == nn) {
+            // Save the atom's neighbor list.
+            for (int i = 0; i < nn; i++) {
+              assert(neighborMapping[i] < nn);
+#ifndef NDEBUG
+              for (int boxIdx = 0; boxIdx < 3; ++boxIdx) {
+                if (domain->periodicity[boxIdx] &&
+                    ((domain->prd[boxIdx] / 2) < neighborVectors[neighborMapping[i]].xyz[boxIdx])) {
+                  lmp->error->all(FLERR, "Simulation cell too small!\n");
+                }
+              }
+#endif
+              assert(neighborVectors[neighborMapping[i]].idx == ii);
+              assert(neighborVectors[neighborMapping[i]].neighIdx != ii);
+              _neighborIndices[ii][i] = neighborVectors[neighborMapping[i]].neighIdx;
+            }
             break;
+          };
+          bitmapSort(neighborMapping.begin() + n1 + 1, neighborMapping.begin() + nn, nn);
+          if (!std::next_permutation(neighborMapping.begin(), neighborMapping.begin() + nn)) {
+            unreachable(lmp);
+            assert(false);
           }
         }
-        if (n421 == 12) {    // FCC
-          crystalStructure[ii] = FCC;
-        } else if (n421 == 6 && n422 == 6) {    // HCP
-          crystalStructure[ii] = HCP;
-        } else {
-          continue;
-        }
-      } else if (_inputStructure == BCC) {
-        int n444 = 0;
-        int n666 = 0;
-        for (int ni = 0; ni < nn; ni++) {
-
-          // Determine number of neighbors the two atoms have in common.
-          unsigned int commonNeighbors;
-          int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
-          if (numCommonNeighbors != 4 && numCommonNeighbors != 6) { break; }
-
-          // Determine the number of bonds among the common neighbors.
-          std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
-          int numNeighborBonds = neighborArray.findNeighborBonds(ni, neighborPairBonds, nn);
-          if (numNeighborBonds != 4 && numNeighborBonds != 6) { break; }
-
-          // Determine the number of bonds in the longest continuous chain.
-          int maxChainLength = NeighborBondArray<_maxNeighCount>::calcMaxChainLength(
-              numNeighborBonds, neighborPairBonds);
-          if (numCommonNeighbors == 4 && numNeighborBonds == 4 && maxChainLength == 4) {
-            n444++;
-          } else if (numCommonNeighbors == 6 && numNeighborBonds == 6 && maxChainLength == 6) {
-            n666++;
-          } else {
-            break;
-          }
-        }
-        if (n666 != 8 || n444 != 6) { continue; }
-        crystalStructure[ii] = BCC;
-      } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
-        int numCommonNeighbors = 3;
-        for (int ni = 0; ni < 4; ni++) {
-          int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
-          if (numCommonNeighbors != 3) { break; }
-        }
-        if (numCommonNeighbors != 3) { continue; }
-        int n543 = 0;
-        int n544 = 0;
-        for (int ni = 4; ni < nn; ni++) {
-          unsigned int commonNeighbors;
-          int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
-          if (numCommonNeighbors != 5) { break; }
-
-          std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
-          int numNeighborBonds = neighborArray.findNeighborBonds(ni, neighborPairBonds, nn);
-          if (numNeighborBonds != 4) { break; }
-
-          int maxChainLength = NeighborBondArray<_maxNeighCount>::calcMaxChainLength(
-              numNeighborBonds, neighborPairBonds);
-          if (maxChainLength == 3) {
-            n543++;
-          } else if (maxChainLength == 4) {
-            n544++;
-          } else
-            break;
-        }
-        if (n543 == 12) {
-          crystalStructure[ii] = CUBIC_DIA;
-        } else if (n543 == 6 && n544 == 6) {
-          crystalStructure[ii] = HEX_DIA;
-        } else {
-          continue;
-        }
-      } else {
-        unreachable(lmp);
       }
     }
     std::array<size_t, 6> summary;
     std::fill(summary.begin(), summary.end(), 0);
     for (int ii = 0; ii < atom->nlocal; ++ii) {
-      summary[static_cast<size_t>(crystalStructure[ii])] += 1;
+      summary[static_cast<size_t>(structureType[ii])] += 1;
     }
     for (auto s : summary) { utils::logmesg(lmp, "\nstructure: {}", s); }
     utils::logmesg(lmp, "\n");
-
-    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    // Map neighbor crystal directions
-    //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    std::array<int, _maxNeighCount> neighborMapping;
-    std::iota(neighborMapping.begin(), neighborMapping.end(), 0);
-    std::array<int, _maxNeighCount> previousMapping;
-    std::fill(previousMapping.begin(), previousMapping.end(), -1);
   }
 
   void FixDXA::end_of_step()

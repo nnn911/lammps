@@ -332,14 +332,15 @@ namespace FIXDXA_NS {
 
     bool getCNANeighbors(std::vector<CNANeighbor> &, const int, const int) const;
 
-    void identifyCrystalStructure() const;
+    void identifyCrystalStructure();
 
     void initializeStructures();
 
-    StructureType _inputStructure;
-    class NeighList *_neighList = nullptr;
     static constexpr size_t _maxNeighCount = 16;
 
+    StructureType _inputStructure;
+    std::vector<std::array<int, _maxNeighCount>> _neighborIndices;
+    class NeighList *_neighList = nullptr;
     static std::array<CrystalStructure<_maxNeighCount>, MAXSTRUCTURECOUNT> _crystalStructures;
   };
 }    // namespace FIXDXA_NS
