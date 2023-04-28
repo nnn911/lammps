@@ -10,16 +10,19 @@
 
 #include "fix_dxa.h"
 #include "atom.h"
+#include "comm.h"
 #include "domain.h"
 #include "error.h"
+#include "memory.h"
 #include "neigh_list.h"
 #include "neighbor.h"
 #include "utils.h"
+#include <deque>
 #include <numeric>
 
 namespace LAMMPS_NS {
 namespace FIXDXA_NS {
-  [[noreturn]] static inline void unreachable(LAMMPS *lmp)
+  [[noreturn]] static void unreachable(LAMMPS *lmp)
   {
 #ifndef NDEBUG
     lmp->error->all(FLERR, "Reached unreachable code!\n");
@@ -33,33 +36,70 @@ namespace FIXDXA_NS {
 #endif
   }
 
-  FixDXA::FixDXA(LAMMPS *lmp, int narg, char **arg) : Fix(lmp, narg, arg)
+  //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  // FIXDXA
+  //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  [[nodiscard]] static StructureType getInputStructure(int narg, char **arg, int minNArg)
   {
-    if (narg < 5) error->all(FLERR, "Not enough parameters specified for fix DXA");
-    int iarg = 3;
+    if (narg < minNArg) { return OTHER; }
+    std::string inputStructure = utils::lowercase(arg[4]);
+    if (inputStructure == "bcc") {
+      return BCC;
+    } else if (inputStructure == "cubicdia") {
+      return CUBIC_DIA;
+    } else if (inputStructure == "fcc") {
+      return FCC;
+    } else if (inputStructure == "hcp") {
+      return HCP;
+    } else if (inputStructure == "hexdia") {
+      return HEX_DIA;
+    } else {
+      return OTHER;
+    }
+  }
 
-    this->nevery = utils::inumeric(FLERR, arg[iarg++], true, lmp);
-    if (this->nevery < 1) error->all(FLERR, "Invalid timestep parameter for fix DXA");
+  static int getNeighCount(StructureType input)
+  {
+    if (input == FCC || input == HCP) {
+      return 12;
+    } else if (input == BCC) {
+      return 14;
+    } else if (input == CUBIC_DIA || input == HEX_DIA) {
+      return 16;
+    } else {
+      return -1;
+    }
+  }
 
-    std::string inputStructure = utils::lowercase(arg[iarg++]);
-    if (inputStructure == "bcc")
-      _inputStructure = BCC;
-    else if (inputStructure == "cubicdia")
-      _inputStructure = CUBIC_DIA;
-    else if (inputStructure == "fcc")
-      _inputStructure = FCC;
-    else if (inputStructure == "hcp")
-      _inputStructure = HCP;
-    else if (inputStructure == "hexdia")
-      _inputStructure = HEX_DIA;
-    else
+  FixDXA::FixDXA(LAMMPS *lmp, int narg, char **arg) :
+      Fix(lmp, narg, arg), _inputStructure{getInputStructure(narg, arg, _minNarg)},
+      _neighCount{getNeighCount(_inputStructure)}
+  {
+    if (narg < _minNarg) error->all(FLERR, "Not enough parameters specified for fix DXA");
+    if (_inputStructure == OTHER)
       error->all(FLERR, "Invalid input structure parameter for fix DXA");
+
+    this->nevery = utils::inumeric(FLERR, arg[3], true, lmp);
+    if (this->nevery < 1) error->all(FLERR, "Invalid timestep parameter for fix DXA");
 
     static bool structuresInitialized = false;
     if (!structuresInitialized) {
       initializeStructures();
       structuresInitialized = true;
     }
+
+    peratom_flag = 1;
+    size_peratom_cols = 2;
+    peratom_freq = 1;
+    memory->create(_output, atom->nlocal, 2, _outputName.c_str());
+    array_atom = _output;
+    atom->add_callback(Atom::GROW);
+  }
+
+  FixDXA::~FixDXA()
+  {
+    atom->delete_callback(id, Atom::GROW);
+    memory->destroy(_output);
   }
 
   template <typename iterator> void bitmapSort(iterator begin, iterator end, size_t size)
@@ -73,7 +113,7 @@ namespace FIXDXA_NS {
     assert(pout == end);
   }
 
-  std::array<CrystalStructure<FixDXA::_maxNeighCount>, FixDXA::MAXSTRUCTURECOUNT>
+  std::array<CrystalStructure<FixDXA::_maxNeighCount>, MAXSTRUCTURECOUNT>
       FixDXA::_crystalStructures;
 
   void FixDXA::initializeStructures()
@@ -375,49 +415,71 @@ namespace FIXDXA_NS {
     }
   }
 
+  void FixDXA::buildNNList()
+  {
+    double **x = atom->x;
+    const int inum = _neighList->inum;
+    const int gnum = _neighList->gnum;
+    const int nmax = inum + gnum;
+    // utils::logmesg(lmp, "\nium: {}, gnum: {}, nmax {}", inum, gnum, atom->nmax);
+    // assert(inum == atom->nmax);
+    // _nnListIdx.clear();
+    // _nnListIdx.reserve(nmax);
+    _nnList.clear();
+    _nnList.reserve(nmax * _neighCount);
+
+    std::vector<std::pair<int, double>> neighList;
+
+    for (int ii = 0; ii < nmax; ++ii) {
+      const int i = _neighList->ilist[ii];
+      const int *jlist = _neighList->firstneigh[i];
+      const int jnum = _neighList->numneigh[i];
+      assert((ii < inum) ? jnum > _neighCount : true);
+
+      neighList.resize(std::max(jnum, _neighCount));
+      for (int jj = 0; jj < std::max(jnum, _neighCount); ++jj) {
+        if (jj < jnum) {
+          int j = jlist[jj];
+          j &= NEIGHMASK;
+          neighList[jj] = {j, 0.0};
+          for (int k = 0; k < 3; ++k) {
+            neighList[jj].second += (x[i][k] - x[j][k]) * (x[i][k] - x[j][k]);
+          }
+        } else {
+          neighList[jj] = {-1, std::numeric_limits<double>::max()};
+        }
+      }
+      std::partial_sort(neighList.begin(), neighList.begin() + _neighCount, neighList.end(),
+                        [](const std::pair<int, double> &a, const std::pair<int, double> &b) {
+                          return a.second < b.second;
+                        });
+      for (int jj = 0; jj < _neighCount; ++jj) { _nnList.push_back(neighList[jj].first); }
+    }
+  }
+
+  // TODO -> this can be a std::vector<CNANeighbor. _maxNeighborCount> &neighborVectors
   bool FixDXA::getCNANeighbors(std::vector<CNANeighbor> &neighborVectors, const int index,
                                const int nn) const
   {
     double **x = atom->x;
-    assert(index < _neighList->inum + _neighList->gnum);
-    const int i = _neighList->ilist[index];
-    const int *jlist = _neighList->firstneigh[i];
-    const int jnum = _neighList->numneigh[i];
-
-    if (jnum < nn) { return false; }
-    if (jnum > neighborVectors.size()) { neighborVectors.resize(jnum); }
-
-    for (int jj = 0; jj < jnum; ++jj) {
-      int j = jlist[jj];
-      j &= NEIGHMASK;
-      CNANeighbor &neigh = neighborVectors[jj];
-      for (int k = 0; k < 3; ++k) { neigh.xyz[k] = x[i][k] - x[j][k]; }
+    assert(index < (_nnList.size() / _neighCount));
+    neighborVectors.resize(nn);
+    const int start = index * _neighCount;
+    for (int i = 0; i < nn; ++i) {
+      CNANeighbor &neigh = neighborVectors[i];
+      assert(start + i < _nnList.size());
+      assert(_nnList[start + i] != -1);
+      for (int k = 0; k < 3; ++k) { neigh.xyz[k] = x[_nnList[start + i]][k] - x[index][k]; }
       neigh.lengthSq = neigh.xyz.lengthSquared();
       neigh.idx = index;
-      neigh.neighIdx = j;
+      neigh.neighIdx = _nnList[start + i];
     }
-
-    std::partial_sort(neighborVectors.begin(), neighborVectors.begin() + nn,
-                      neighborVectors.begin() + jnum);
     return true;
   }
 
   void FixDXA::identifyCrystalStructure()
   {
-    // Number of neighbors to analyze.
-    const int nn = [this]() {
-      if (_inputStructure == FCC || _inputStructure == HCP) {
-        return 12;
-      } else if (_inputStructure == BCC) {
-        return 14;
-      } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
-        return 16;
-      } else {
-        error->all(FLERR, "Implementation error in fix DXA");
-        return -1;
-      }
-    }();
-
+    tagint *atomTags = atom->tag;
     //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     // Adaptive neighbor cutoff
     //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -428,8 +490,8 @@ namespace FIXDXA_NS {
     const int inum = _neighList->inum;
     std::array<int, _maxNeighCount> cnaSignatures;
     cnaSignatures.fill(-1);
-    std::vector<StructureType> structureType;
-    structureType.resize(inum, OTHER);
+    _structureType.resize(inum, OTHER);
+    std::fill(_structureType.begin(), _structureType.end(), OTHER);
     double localCutoff = 0;
     double localScaling = 0;
     _neighborIndices.clear();
@@ -439,12 +501,12 @@ namespace FIXDXA_NS {
         localScaling = 0;
         neighborArray.reset();
         if (_inputStructure == FCC || _inputStructure == HCP) {
-          if (!getCNANeighbors(neighborVectors, ii, nn)) continue;
+          if (!getCNANeighbors(neighborVectors, ii, _neighCount)) continue;
           for (int n = 0; n < 12; ++n) { localScaling += sqrt(neighborVectors[n].lengthSq); }
           localScaling /= 12;
           localCutoff = localScaling * (1.0 + sqrt(2.0)) * 0.5;
         } else if (_inputStructure == BCC) {
-          if (!getCNANeighbors(neighborVectors, ii, nn)) continue;
+          if (!getCNANeighbors(neighborVectors, ii, _neighCount)) continue;
           for (int n = 0; n < 8; ++n) { localScaling += sqrt(neighborVectors[n].lengthSq); }
           localScaling /= 8;
           localCutoff = localScaling / (sqrt(3.0) / 2.0) * 0.5 * (1.0 + sqrt(2.0));
@@ -485,9 +547,9 @@ namespace FIXDXA_NS {
         double localCutoffSquared = localCutoff * localCutoff;
         // Compute common neighbor bit-flag array.
         if (_inputStructure == FCC || _inputStructure == HCP || _inputStructure == BCC) {
-          for (int n1 = 0; n1 < nn; ++n1) {
+          for (int n1 = 0; n1 < _neighCount; ++n1) {
             neighborArray.setNeighborBond(n1, n1, false);
-            for (int n2 = n1 + 1; n2 < nn; ++n2) {
+            for (int n2 = n1 + 1; n2 < _neighCount; ++n2) {
               auto v = neighborVectors[n1].xyz - neighborVectors[n2].xyz;
               if ((neighborVectors[n1].xyz - neighborVectors[n2].xyz).lengthSquared() <=
                   localCutoffSquared) {
@@ -496,8 +558,8 @@ namespace FIXDXA_NS {
             }
           }
         } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
-          for (int n1 = 4; n1 < nn; ++n1) {
-            for (int n2 = n1 + 1; n2 < nn; ++n2)
+          for (int n1 = 4; n1 < _neighCount; ++n1) {
+            for (int n2 = n1 + 1; n2 < _neighCount; ++n2)
               if ((neighborVectors[n1].xyz - neighborVectors[n2].xyz).lengthSquared() <=
                   localCutoffSquared) {
                 neighborArray.setNeighborBond(n1, n2);
@@ -515,14 +577,15 @@ namespace FIXDXA_NS {
         if (_inputStructure == FCC || _inputStructure == HCP) {
           int n421 = 0;
           int n422 = 0;
-          for (int ni = 0; ni < nn; ++ni) {
+          for (int ni = 0; ni < _neighCount; ++ni) {
 
             int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
             if (numCommonNeighbors != 4) break;
 
             std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
             neighborPairBonds.fill(0);
-            int numNeighborBonds = neighborArray.findNeighborBonds(ni, neighborPairBonds, nn);
+            int numNeighborBonds =
+                neighborArray.findNeighborBonds(ni, neighborPairBonds, _neighCount);
             if (numNeighborBonds != 2) break;
             int maxChainLength = NeighborBondArray<_maxNeighCount>::calcMaxChainLength(
                 numNeighborBonds, neighborPairBonds);
@@ -537,16 +600,16 @@ namespace FIXDXA_NS {
             }
           }
           if (n421 == 12) {    // FCC
-            structureType[ii] = FCC;
+            _structureType[ii] = FCC;
           } else if (n421 == 6 && n422 == 6) {    // HCP
-            structureType[ii] = HCP;
+            _structureType[ii] = HCP;
           } else {
             continue;
           }
         } else if (_inputStructure == BCC) {
           int n444 = 0;
           int n666 = 0;
-          for (int ni = 0; ni < nn; ni++) {
+          for (int ni = 0; ni < _neighCount; ni++) {
 
             // Determine number of neighbors the two atoms have in common.
             unsigned int commonNeighbors;
@@ -555,7 +618,8 @@ namespace FIXDXA_NS {
 
             // Determine the number of bonds among the common neighbors.
             std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
-            int numNeighborBonds = neighborArray.findNeighborBonds(ni, neighborPairBonds, nn);
+            int numNeighborBonds =
+                neighborArray.findNeighborBonds(ni, neighborPairBonds, _neighCount);
             if (numNeighborBonds != 4 && numNeighborBonds != 6) { break; }
 
             // Determine the number of bonds in the longest continuous chain.
@@ -572,7 +636,7 @@ namespace FIXDXA_NS {
             }
           }
           if (n666 != 8 || n444 != 6) { continue; }
-          structureType[ii] = BCC;
+          _structureType[ii] = BCC;
         } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
           int numCommonNeighbors = 3;
           for (int ni = 0; ni < 4; ni++) {
@@ -583,13 +647,14 @@ namespace FIXDXA_NS {
           if (numCommonNeighbors != 3) { continue; }
           int n543 = 0;
           int n544 = 0;
-          for (int ni = 4; ni < nn; ni++) {
+          for (int ni = 4; ni < _neighCount; ni++) {
             unsigned int commonNeighbors;
             int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
             if (numCommonNeighbors != 5) { break; }
 
             std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
-            int numNeighborBonds = neighborArray.findNeighborBonds(ni, neighborPairBonds, nn);
+            int numNeighborBonds =
+                neighborArray.findNeighborBonds(ni, neighborPairBonds, _neighCount);
             if (numNeighborBonds != 4) { break; }
 
             int maxChainLength = NeighborBondArray<_maxNeighCount>::calcMaxChainLength(
@@ -604,9 +669,9 @@ namespace FIXDXA_NS {
               break;
           }
           if (n543 == 12) {
-            structureType[ii] = CUBIC_DIA;
+            _structureType[ii] = CUBIC_DIA;
           } else if (n543 == 6 && n544 == 6) {
-            structureType[ii] = HEX_DIA;
+            _structureType[ii] = HEX_DIA;
           } else {
             continue;
           }
@@ -626,7 +691,7 @@ namespace FIXDXA_NS {
         while (true) {
           int n1 = 0;
           while (neighborMapping[n1] == previousMapping[n1]) { n1++; }
-          for (; n1 < nn; n1++) {
+          for (; n1 < _neighCount; n1++) {
             int atomNeighborIndex1 = neighborMapping[n1];
             previousMapping[n1] = atomNeighborIndex1;
             if (cnaSignatures[atomNeighborIndex1] != crystalStructure.cnaSignatures[n1]) { break; }
@@ -640,10 +705,10 @@ namespace FIXDXA_NS {
             }
             if (n2 != n1) { break; }
           }
-          if (n1 == nn) {
+          if (n1 == _neighCount) {
             // Save the atom's neighbor list.
-            for (int i = 0; i < nn; i++) {
-              assert(neighborMapping[i] < nn);
+            for (int i = 0; i < _neighCount; i++) {
+              assert(neighborMapping[i] < _neighCount);
 #ifndef NDEBUG
               for (int boxIdx = 0; boxIdx < 3; ++boxIdx) {
                 if (domain->periodicity[boxIdx] &&
@@ -652,16 +717,17 @@ namespace FIXDXA_NS {
                 }
               }
 #endif
-              assert(neighborVectors[neighborMapping[i]].idx == ii);
-              assert(neighborVectors[neighborMapping[i]].neighIdx != ii);
+              // assert(neighborVectors[neighborMapping[i]].idx == ii);
+              // assert(neighborVectors[neighborMapping[i]].neighIdx != ii);
               _neighborIndices[ii][i] = neighborVectors[neighborMapping[i]].neighIdx;
             }
             break;
           };
-          bitmapSort(neighborMapping.begin() + n1 + 1, neighborMapping.begin() + nn, nn);
-          if (!std::next_permutation(neighborMapping.begin(), neighborMapping.begin() + nn)) {
+          bitmapSort(neighborMapping.begin() + n1 + 1, neighborMapping.begin() + _neighCount,
+                     _neighCount);
+          if (!std::next_permutation(neighborMapping.begin(),
+                                     neighborMapping.begin() + _neighCount)) {
             unreachable(lmp);
-            assert(false);
           }
         }
       }
@@ -669,33 +735,135 @@ namespace FIXDXA_NS {
     std::array<size_t, 6> summary;
     std::fill(summary.begin(), summary.end(), 0);
     for (int ii = 0; ii < atom->nlocal; ++ii) {
-      summary[static_cast<size_t>(structureType[ii])] += 1;
+      summary[static_cast<size_t>(_structureType[ii])] += 1;
     }
     for (auto s : summary) { utils::logmesg(lmp, "\nstructure: {}", s); }
     utils::logmesg(lmp, "\n");
   }
 
+  static inline Vector3d xToVector(double *x)
+  {
+    return {x[0], x[1], x[2]};
+  }
+
+  void FixDXA::buildClusters()
+  {
+    comm_forward = _neighCount;
+    comm_reverse = _neighCount;
+    tagint *atomTags = atom->tag;
+    double **x = atom->x;
+
+    _atomClusterType.resize(atom->nmax);
+    const tagint invalid = std::numeric_limits<tagint>::max();
+    std::fill(_atomClusterType.begin(), _atomClusterType.end(), invalid);
+
+    _atomSymmetryPermutations.reserve(atom->nmax);
+    std::fill(_atomSymmetryPermutations.begin(), _atomSymmetryPermutations.end(), 0);
+    return;
+    for (int ii = 0; ii < atom->nlocal; ++ii) {
+      if (_atomClusterType[ii] != invalid) continue;
+      if (_structureType[ii] == OTHER) continue;
+      int clusterIndex = _clusterGraph.addCluster(atomTags[ii], _structureType[ii]);
+      _atomClusterType[ii] = atomTags[ii];
+      Matrix3d orientationV = Matrix3d::Zero();
+      Matrix3d orientationW = Matrix3d::Zero();
+      const auto &crystalStructure = _crystalStructures[_structureType[ii]];
+
+      std::deque<tagint> atomQueue{ii};
+      while (!atomQueue.empty()) {
+        int currentAtom = atomQueue.front();
+        atomQueue.pop_front();
+        int symmetryPermutation = _atomSymmetryPermutations[currentAtom];
+        const auto &permutation = crystalStructure.permutations[symmetryPermutation].permutation;
+
+        const Vector3d iiPosition = xToVector(x[ii]);
+        for (int jj = 0; jj < _neighCount; ++jj) {
+          const int neighIdx = _nnList[_neighCount * ii + jj];
+          const Vector3d &latticeVector = crystalStructure.latticeVectors[permutation[jj]];
+          Vector3d spatialVector = xToVector(x[neighIdx]) - iiPosition;
+          for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+              orientationV(i, j) += (latticeVector[j] * latticeVector[i]);
+              orientationW(i, j) += (latticeVector[j] * spatialVector[i]);
+            }
+          }
+          if (_atomClusterType[neighIdx] != 0) { continue; }
+          if (_structureType[neighIdx] != _inputStructure) { continue; }
+
+          Matrix3d tm1, tm2;
+          bool overlap = true;
+          for (int i = 0; i < 3; i++) {
+            int atomIndex;
+            if (i != 2) {
+              atomIndex = _nnList[ii + crystalStructure.commonNeighbors[neighIdx][i]];
+              tm1.column(i) =
+                  crystalStructure
+                      .latticeVectors[permutation[crystalStructure.commonNeighbors[neighIdx][i]]] -
+                  crystalStructure.latticeVectors[permutation[neighIdx]];
+            } else {
+              atomIndex = ii;
+              tm1.column(i) = -crystalStructure.latticeVectors[permutation[neighIdx]];
+            }
+            auto pos =
+                std::find(_nnList.begin() + neighIdx, _nnList.begin() + neighIdx + _neighCount, ii);
+            if (*pos != ii) {
+              overlap = false;
+              break;
+            }
+            tm2.column(i) = crystalStructure.latticeVectors[*pos];
+          }
+          if (!overlap) { continue; }
+          assert(std::abs(tm1.determinant()) > EPSILON);
+          Matrix3d tm2inverse;
+          if (!tm2.inverse(tm2inverse)) { continue; }
+          Matrix3d transition = tm1 * tm2inverse;
+
+          for (int i = 0; i < crystalStructure.permutations.size(); ++i) {
+            if (transition.equals(crystalStructure.permutations[i].transformation,
+                                  TRANSITION_MATRIX_EPSILON)) {
+
+              _atomClusterType[neighIdx] = atomTags[ii];
+              _atomSymmetryPermutations[neighIdx] = i;
+              if (neighIdx < atom->nlocal) { atomQueue.push_back(neighIdx); }
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
   void FixDXA::end_of_step()
   {
-    if (_inputStructure == FCC || _inputStructure == BCC || _inputStructure == HCP) {
-      neighbor->build_one(_neighList);
-    }
+    // if (_inputStructure == FCC || _inputStructure == BCC || _inputStructure == HCP) {
+    //   neighbor->build_one(_neighList);
+    // }
+    buildNNList();
     identifyCrystalStructure();
+    buildClusters();
+    assert(_atomClusterType.size() >= atom->nlocal);
+    assert(_structureType.size() >= atom->nlocal);
+    for (int i = 0; i < atom->nlocal; ++i) {
+      _output[i][0] = static_cast<double>(_atomClusterType[i]);
+      _output[i][1] = static_cast<double>(static_cast<int>(_structureType[i]));
+    }
+    array_atom = _output;
   }
 
   void FixDXA::init()
   {
     if (!(atom->tag_enable))
       error->all(FLERR, "Fix DXA requires atoms having IDs. Please use 'atom_modify id yes'");
-
-    if (_inputStructure == FCC || _inputStructure == BCC || _inputStructure == HCP) {
-      neighbor->add_request(this, NeighConst::REQ_FULL | NeighConst::REQ_OCCASIONAL);
-    } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
-      neighbor->add_request(this,
-                            NeighConst::REQ_FULL | NeighConst::REQ_DEFAULT | NeighConst::REQ_GHOST);
-    } else {
-      unreachable(lmp);
-    }
+    neighbor->add_request(this,
+                          NeighConst::REQ_FULL | NeighConst::REQ_DEFAULT | NeighConst::REQ_GHOST);
+    // if (_inputStructure == FCC || _inputStructure == BCC || _inputStructure == HCP) {
+    //   neighbor->add_request(this, NeighConst::REQ_FULL | NeighConst::REQ_OCCASIONAL);
+    // } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
+    //   neighbor->add_request(this,
+    //                         NeighConst::REQ_FULL | NeighConst::REQ_DEFAULT | NeighConst::REQ_GHOST);
+    // } else {
+    //   unreachable(lmp);
+    // }
   }
 
   void FixDXA::init_list(int, NeighList *ptr)
@@ -713,6 +881,50 @@ namespace FIXDXA_NS {
   void FixDXA::setup(int)
   {
     utils::logmesg(lmp, "Fix DXA version {}\n", VERSION);
+    end_of_step();
   }
+
+  double FixDXA::memory_usage()
+  {
+    // return atom->nmax * _neighCount * sizeof(tagint);
+    return 0;
+  }
+
+  void FixDXA::grow_arrays(int nmax)
+  {
+    _neighborIndices.resize(nmax);
+    memory->grow(_output, nmax, 2, _outputName.c_str());
+  }
+
+  void FixDXA::copy_arrays(int i, int j, int delflag)
+  {
+    _neighborIndices[j] = _neighborIndices[i];
+    _output[j][0] = _output[i][0];
+    _output[j][1] = _output[i][1];
+  }
+
+  void FixDXA::set_arrays(int i)
+  {
+    _neighborIndices[i].fill(0);
+    _output[i][0] = -1;
+    _output[i][1] = -1;
+  }
+
+  int FixDXA::pack_exchange(int i, double *buf)
+  {
+    int m = 0;
+    for (int j = 0; j < _neighCount; ++j) { buf[m++] = ubuf(_neighborIndices[i][j]).d; }
+    return m;
+  }
+
+  int FixDXA::unpack_exchange(int nlocal, double *buf)
+  {
+    int m = 0;
+    for (int j = 0; j < _neighCount; ++j) {
+      _neighborIndices[nlocal][j] = (tagint) ubuf(buf[m++]).i;
+    }
+    return m;
+  }
+
 }    // namespace FIXDXA_NS
 }    // namespace LAMMPS_NS
