@@ -58,7 +58,7 @@ namespace FIXDXA_NS {
     }
   }
 
-  static int getNeighCount(StructureType input)
+  [[nodiscard]] static int getNeighCount(StructureType input)
   {
     if (input == FCC || input == HCP) {
       return 12;
@@ -90,10 +90,11 @@ namespace FIXDXA_NS {
 
     peratom_flag = 1;
     size_peratom_cols = 2;
-    peratom_freq = 1;
+    peratom_freq = nevery;
     memory->create(_output, atom->nlocal, 2, _outputName.c_str());
     array_atom = _output;
     atom->add_callback(Atom::GROW);
+    grow_arrays(atom->nmax);
   }
 
   FixDXA::~FixDXA()
@@ -759,7 +760,7 @@ namespace FIXDXA_NS {
 
     _atomSymmetryPermutations.reserve(atom->nmax);
     std::fill(_atomSymmetryPermutations.begin(), _atomSymmetryPermutations.end(), 0);
-    return;
+
     for (int ii = 0; ii < atom->nlocal; ++ii) {
       if (_atomClusterType[ii] != invalid) continue;
       if (_structureType[ii] == OTHER) continue;
@@ -787,9 +788,9 @@ namespace FIXDXA_NS {
               orientationW(i, j) += (latticeVector[j] * spatialVector[i]);
             }
           }
-          if (_atomClusterType[neighIdx] != 0) { continue; }
+          if (_atomClusterType[neighIdx] != invalid) { continue; }
           if (_structureType[neighIdx] != _inputStructure) { continue; }
-
+          // return;
           Matrix3d tm1, tm2;
           bool overlap = true;
           for (int i = 0; i < 3; i++) {
@@ -813,6 +814,7 @@ namespace FIXDXA_NS {
             tm2.column(i) = crystalStructure.latticeVectors[*pos];
           }
           if (!overlap) { continue; }
+          // return;
           assert(std::abs(tm1.determinant()) > EPSILON);
           Matrix3d tm2inverse;
           if (!tm2.inverse(tm2inverse)) { continue; }
