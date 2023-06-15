@@ -148,10 +148,12 @@ namespace FIXDXA_NS {
                     (*this)[2][2] * (*this)[2][2] - T(1)) <= eps);
     }
 
+    bool invertible() const { return std::abs(determinant()) > EPSILON; }
+
     Matrix3 inverse() const
     {
+      assert(invertible());
       T det = determinant();
-      assert(std::abs(det) >= EPSILON);
       return Matrix3<T>(((*this)[1][1] * (*this)[2][2] - (*this)[1][2] * (*this)[2][1]) / det,
                         ((*this)[2][0] * (*this)[1][2] - (*this)[1][0] * (*this)[2][2]) / det,
                         ((*this)[1][0] * (*this)[2][1] - (*this)[1][1] * (*this)[2][0]) / det,

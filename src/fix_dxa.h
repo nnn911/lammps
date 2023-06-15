@@ -143,9 +143,11 @@ namespace FIXDXA_NS {
   };
 
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-  // STRUCTURETYPE
+  // ENUMS
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   enum StructureType : int { BCC = 0, CUBIC_DIA, FCC, HCP, HEX_DIA, OTHER, MAXSTRUCTURECOUNT };
+  enum ClusterStatus : tagint { INVALID = -1 };
+  enum CommSteps { STRUCTURE, CLUSTER, NOCOM };
 
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   // SYMMETRYPERMUTATION
@@ -198,42 +200,73 @@ namespace FIXDXA_NS {
     Matrix3d orientation = Matrix3d::Identity();
     Cluster(tagint id, StructureType structure) : id{id}, structure{structure} {}
   };
+
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   // CLUSTERTRANSITION
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   struct ClusterTransition {
-    size_t cluster1;
-    size_t cluster2;
-    Matrix3d transition = Matrix3d::Identity();
+    tagint cluster1;
+    tagint cluster2;
+    Matrix3d transition;
+
+    ClusterTransition(tagint cluster1, tagint cluster2, const Matrix3d &transition) :
+        cluster1{cluster1}, cluster2{cluster2}, transition{transition}
+    {
+    }
 
     bool operator==(const ClusterTransition &rhs) const
     {
       return (cluster1 == rhs.cluster1) && (cluster2 == rhs.cluster2) &&
-          (transition.equals(rhs.transition, EPSILON));
+          (transition.equals(rhs.transition, TRANSITION_MATRIX_EPSILON));
     }
   };
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   // CLUSTERGRAPH
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-  class ClusterGraph {
-   public:
+  struct ClusterGraph {
     ClusterGraph() = default;
     explicit ClusterGraph(size_t n) { reserve(n); }
 
     int addCluster(tagint id, StructureType structureType)
     {
-      _clusterVector.emplace_back(id, structureType);
-      return _clusterVector.size() - 1;
-    }
-    void reserve(size_t n)
-    {
-      _clusterVector.reserve(n);
-      _clusterTransitions.reserve(2 * n);
+      clusters.emplace_back(id, structureType);
+      return clusters.size() - 1;
     }
 
-   private:
-    std::vector<Cluster> _clusterVector;
-    std::vector<ClusterTransition> _clusterTransitions;
+    int addClusterTransition(tagint cluster1, tagint cluster2,
+                             const Matrix3d &transition = Matrix3d::Identity())
+    {
+      clusterTransitions.emplace_back(cluster1, cluster2, transition);
+      return clusters.size() - 1;
+    }
+
+    void reserve(size_t n)
+    {
+      clusters.reserve(n);
+      clusterTransitions.reserve(2 * n);
+    }
+
+    size_t findCluster(tagint clusterId)
+    {
+      for (size_t i = 0; i < clusters.size(); ++i) {
+        if (clusters[i].id == clusterId) { return i; }
+      }
+      return clusters.size();
+    }
+
+    size_t findClusterTransition(tagint clusterId1, tagint clusterId2)
+    {
+      for (size_t i = 0; i < clusterTransitions.size(); ++i) {
+        if ((clusterTransitions[i].cluster1 == clusterId1) &&
+            (clusterTransitions[i].cluster2 == clusterId2)) {
+          return i;
+        }
+      }
+      return clusters.size();
+    }
+
+    std::vector<Cluster> clusters;
+    std::vector<ClusterTransition> clusterTransitions;
   };
 
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -277,13 +310,15 @@ namespace FIXDXA_NS {
 
     void buildNNList();
     void buildClusters();
+    void connectClusters();
 
     static constexpr size_t _maxNeighCount = 16;
     static constexpr size_t _minNarg = 5;
     const StructureType _inputStructure;
     const int _neighCount;
 
-    enum CommSteps { STRUCTURE, CLUSTER, INVALID };
+    int me;
+
     CommSteps _commStep = STRUCTURE;
 
     // std::vector<tagint> _nnListIdx;
