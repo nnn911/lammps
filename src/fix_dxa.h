@@ -262,7 +262,7 @@ namespace FIXDXA_NS {
           return i;
         }
       }
-      return clusters.size();
+      return clusterTransitions.size();
     }
 
     std::vector<Cluster> clusters;
@@ -308,9 +308,12 @@ namespace FIXDXA_NS {
 
     void initializeStructures();
 
-    void buildNNList();
+    // void buildNNList();
+    void buildNNList(int, int);
     void buildClusters();
     void connectClusters();
+
+    double getSqNeighDistance(int, int);
 
     static constexpr size_t _maxNeighCount = 16;
     static constexpr size_t _minNarg = 5;
@@ -323,6 +326,7 @@ namespace FIXDXA_NS {
 
     // std::vector<tagint> _nnListIdx;
     std::vector<int> _nnList;
+    std::vector<std::pair<int, double>> _nnListBuffer;
 
     std::vector<std::array<tagint, _maxNeighCount>> _neighborIndices;
     std::vector<StructureType> _structureType;

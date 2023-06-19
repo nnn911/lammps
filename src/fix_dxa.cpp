@@ -471,7 +471,48 @@ namespace FIXDXA_NS {
     // }
   }
 
-  void FixDXA::buildNNList()
+  // void FixDXA::buildNNList()
+  // {
+  //   double **x = atom->x;
+  //   const int inum = _neighList->inum;
+  //   assert(_neighList->inum == atom->nlocal);
+  //   const int gnum = _neighList->gnum;
+  //   assert(_neighList->gnum == atom->nghost);
+  //   const int nmax = inum + gnum;
+
+  //   _nnList.clear();
+  //   _nnList.reserve(nmax * _neighCount);
+
+  //   std::vector<std::pair<int, double>> neighList;
+
+  //   for (int ii = 0; ii < nmax; ++ii) {
+  //     const int i = _neighList->ilist[ii];
+  //     const int *jlist = _neighList->firstneigh[i];
+  //     const int jnum = _neighList->numneigh[i];
+  //     assert((ii < inum) ? jnum > _neighCount : true);
+
+  //     neighList.resize(std::max(jnum, _neighCount));
+  //     for (int jj = 0; jj < std::max(jnum, _neighCount); ++jj) {
+  //       if (jj < jnum) {
+  //         int j = jlist[jj];
+  //         j &= NEIGHMASK;
+  //         neighList[jj] = {j, 0.0};
+  //         for (int k = 0; k < 3; ++k) {
+  //           neighList[jj].second += (x[i][k] - x[j][k]) * (x[i][k] - x[j][k]);
+  //         }
+  //       } else {
+  //         neighList[jj] = {-1, std::numeric_limits<double>::max()};
+  //       }
+  //     }
+  //     std::partial_sort(neighList.begin(), neighList.begin() + _neighCount, neighList.end(),
+  //                       [](const std::pair<int, double> &a, const std::pair<int, double> &b) {
+  //                         return a.second < b.second;
+  //                       });
+  //     for (int jj = 0; jj < _neighCount; ++jj) { _nnList.push_back(neighList[jj].first); }
+  //   }
+  // }
+
+  void FixDXA::buildNNList(int ii, int numNeigh)
   {
     double **x = atom->x;
     const int inum = _neighList->inum;
@@ -480,56 +521,62 @@ namespace FIXDXA_NS {
     assert(_neighList->gnum == atom->nghost);
     const int nmax = inum + gnum;
 
-    _nnList.clear();
-    _nnList.reserve(nmax * _neighCount);
+    _nnList.resize(numNeigh);
 
-    std::vector<std::pair<int, double>> neighList;
+    std::vector<std::pair<int, double>> _nnListBuffer;
 
-    for (int ii = 0; ii < nmax; ++ii) {
-      const int i = _neighList->ilist[ii];
-      const int *jlist = _neighList->firstneigh[i];
-      const int jnum = _neighList->numneigh[i];
-      assert((ii < inum) ? jnum > _neighCount : true);
+    const int i = _neighList->ilist[ii];
+    const int *jlist = _neighList->firstneigh[i];
+    const int jnum = _neighList->numneigh[i];
+    assert((ii < inum) ? jnum > numNeigh : true);
 
-      neighList.resize(std::max(jnum, _neighCount));
-      for (int jj = 0; jj < std::max(jnum, _neighCount); ++jj) {
-        if (jj < jnum) {
-          int j = jlist[jj];
-          j &= NEIGHMASK;
-          neighList[jj] = {j, 0.0};
-          for (int k = 0; k < 3; ++k) {
-            neighList[jj].second += (x[i][k] - x[j][k]) * (x[i][k] - x[j][k]);
-          }
-        } else {
-          neighList[jj] = {-1, std::numeric_limits<double>::max()};
+    _nnListBuffer.resize(std::max(jnum, numNeigh));
+    for (int jj = 0; jj < std::max(jnum, numNeigh); ++jj) {
+      if (jj < jnum) {
+        int j = jlist[jj];
+        j &= NEIGHMASK;
+        _nnListBuffer[jj] = {j, 0.0};
+        for (int k = 0; k < 3; ++k) {
+          _nnListBuffer[jj].second += (x[i][k] - x[j][k]) * (x[i][k] - x[j][k]);
         }
+      } else {
+        _nnListBuffer[jj] = {-1, std::numeric_limits<double>::max()};
       }
-      std::partial_sort(neighList.begin(), neighList.begin() + _neighCount, neighList.end(),
-                        [](const std::pair<int, double> &a, const std::pair<int, double> &b) {
-                          return a.second < b.second;
-                        });
-      for (int jj = 0; jj < _neighCount; ++jj) { _nnList.push_back(neighList[jj].first); }
     }
+    std::partial_sort(_nnListBuffer.begin(), _nnListBuffer.begin() + numNeigh, _nnListBuffer.end(),
+                      [](const std::pair<int, double> &a, const std::pair<int, double> &b) {
+                        return a.second < b.second;
+                      });
+    for (int jj = 0; jj < numNeigh; ++jj) { _nnList[jj] = _nnListBuffer[jj].first; }
   }
 
-  // TODO -> this can be a std::vector<CNANeighbor. _maxNeighborCount> &neighborVectors
+  // TODO -> this can be a std::array<CNANeighbor. _maxNeighborCount> &neighborVectors
   bool FixDXA::getCNANeighbors(std::vector<CNANeighbor> &neighborVectors, const int index,
                                const int nn) const
   {
     double **x = atom->x;
-    assert(index < (_nnList.size() / _neighCount));
+    assert(nn <= _nnList.size());
     neighborVectors.resize(nn);
-    const int start = index * _neighCount;
     for (int i = 0; i < nn; ++i) {
       CNANeighbor &neigh = neighborVectors[i];
-      assert(start + i < _nnList.size());
-      assert(_nnList[start + i] != -1);
-      for (int k = 0; k < 3; ++k) { neigh.xyz[k] = x[_nnList[start + i]][k] - x[index][k]; }
+      assert(_nnList[i] != -1);
+      for (int k = 0; k < 3; ++k) { neigh.xyz[k] = x[_nnList[i]][k] - x[index][k]; }
       neigh.lengthSq = neigh.xyz.lengthSquared();
       neigh.idx = index;
-      neigh.neighIdx = _nnList[start + i];
+      neigh.neighIdx = _nnList[i];
     }
     return true;
+  }
+
+  double FixDXA::getSqNeighDistance(int ii, int jj)
+  {
+    double **x = atom->x;
+    assert(jj < _nnList.size());
+    double sqDistance = 0;
+    for (int k = 0; k < 3; ++k) {
+      sqDistance += (x[_nnList[jj]][k] - x[ii][k]) * (x[_nnList[jj]][k] - x[ii][k]);
+    }
+    return sqDistance;
   }
 
   void FixDXA::identifyCrystalStructure()
@@ -551,37 +598,57 @@ namespace FIXDXA_NS {
     cnaSignatures.fill(-1);
     _structureType.resize(ntotal, OTHER);
     std::fill(_structureType.begin(), _structureType.end(), OTHER);
-    double localCutoff = 0;
-    double localScaling = 0;
+
+    double localCutoffSquared = 0;
     _neighborIndices.clear();
     _neighborIndices.resize(ntotal);
     for (int ii = 0; ii < ntotal; ++ii) {
       {
         auto atomTag = atomTags[ii];
-        localScaling = 0;
+        double localCutoff = 0;
+        double localScaling = 0;
         neighborArray.reset();
         if (_inputStructure == FCC || _inputStructure == HCP) {
+          buildNNList(ii, _neighCount + 1);
           if (!getCNANeighbors(neighborVectors, ii, _neighCount)) continue;
           for (int n = 0; n < 12; ++n) { localScaling += sqrt(neighborVectors[n].lengthSq); }
           localScaling /= 12;
           localCutoff = localScaling * (1.0 + sqrt(2.0)) * 0.5;
+          localCutoffSquared = localCutoff * localCutoff;
+          // Skip over coordinated atoms
+          if (getSqNeighDistance(ii, _neighCount) < localCutoffSquared) {
+            _structureType[ii] = OTHER;
+            continue;
+          }
         } else if (_inputStructure == BCC) {
+          buildNNList(ii, _neighCount + 1);
           if (!getCNANeighbors(neighborVectors, ii, _neighCount)) continue;
           for (int n = 0; n < 8; ++n) { localScaling += sqrt(neighborVectors[n].lengthSq); }
           localScaling /= 8;
           localCutoff = localScaling / (sqrt(3.0) / 2.0) * 0.5 * (1.0 + sqrt(2.0));
+          localCutoffSquared = localCutoff * localCutoff;
+          // Skip over coordinated atoms
+          if (getSqNeighDistance(ii, _neighCount) < localCutoffSquared) {
+            _structureType[ii] = OTHER;
+            continue;
+          }
         } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
           int outIndex = 4;
           neighborVectors.resize(16);
+          buildNNList(ii, 4);
           if (!getCNANeighbors(neighborVectors1, ii, 4)) continue;
           for (int n = 0; n < 4; ++n) {
             neighborVectors[n] = std::move(neighborVectors1[n]);
-            if (!getCNANeighbors(neighborVectors2, neighborVectors[n].neighIdx, 4)) break;
+            buildNNList(neighborVectors[n].neighIdx, 4);
+            if (!getCNANeighbors(neighborVectors2, neighborVectors[n].neighIdx, 4)) { break; }
             for (int m = 0; m < 4; ++m) {
-              if (outIndex == 16) break;
               if (neighborVectors2[m].neighIdx == neighborVectors[n].idx &&
                   (neighborVectors[n].xyz + neighborVectors2[m].xyz).isZero(EPSILON)) {
                 continue;
+              }
+              if (outIndex == 16) {
+                outIndex++;
+                break;
               }
               neighborVectors[outIndex] = std::move(neighborVectors2[m]);
               neighborVectors[outIndex].xyz =
@@ -590,21 +657,20 @@ namespace FIXDXA_NS {
               neighborArray.setNeighborBond(n, outIndex);
               outIndex++;
             }
-            if (outIndex != n * 3 + 7) break;
+            if (outIndex != n * 3 + 7) { break; }
           }
-          if (outIndex != 16) continue;
+          if (outIndex != 16) { continue; }
 
-          for (int n = 4; n < 16; n++) localScaling += sqrt(neighborVectors[n].lengthSq);
+          for (int n = 4; n < 16; n++) { localScaling += sqrt(neighborVectors[n].lengthSq); }
           localScaling /= 12;
           localCutoff = localScaling * 1.2071068;
-
+          localCutoffSquared = localCutoff * localCutoff;
         } else {
           unreachable(lmp);
         }
       }
 
       {
-        double localCutoffSquared = localCutoff * localCutoff;
         // Compute common neighbor bit-flag array.
         if (_inputStructure == FCC || _inputStructure == HCP || _inputStructure == BCC) {
           for (int n1 = 0; n1 < _neighCount; ++n1) {
@@ -633,6 +699,7 @@ namespace FIXDXA_NS {
       //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
       // Core CNA
       //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+      StructureType structureType = OTHER;
       {
         if (_inputStructure == FCC || _inputStructure == HCP) {
           int n421 = 0;
@@ -660,9 +727,9 @@ namespace FIXDXA_NS {
             }
           }
           if (n421 == 12) {    // FCC
-            _structureType[ii] = FCC;
+            structureType = FCC;
           } else if (n421 == 6 && n422 == 6) {    // HCP
-            _structureType[ii] = HCP;
+            structureType = HCP;
           } else {
             continue;
           }
@@ -696,12 +763,12 @@ namespace FIXDXA_NS {
             }
           }
           if (n666 != 8 || n444 != 6) { continue; }
-          _structureType[ii] = BCC;
+          structureType = BCC;
         } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
-          int numCommonNeighbors = 3;
+          int numCommonNeighbors;
           for (int ni = 0; ni < 4; ni++) {
             cnaSignatures[ni] = 0;
-            int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
+            numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
             if (numCommonNeighbors != 3) { break; }
           }
           if (numCommonNeighbors != 3) { continue; }
@@ -709,7 +776,7 @@ namespace FIXDXA_NS {
           int n544 = 0;
           for (int ni = 4; ni < _neighCount; ni++) {
             unsigned int commonNeighbors;
-            int numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
+            numCommonNeighbors = neighborArray.countCommonNeighbors(ni);
             if (numCommonNeighbors != 5) { break; }
 
             std::array<unsigned int, _maxNeighCount * _maxNeighCount> neighborPairBonds;
@@ -729,9 +796,9 @@ namespace FIXDXA_NS {
               break;
           }
           if (n543 == 12) {
-            _structureType[ii] = CUBIC_DIA;
+            structureType = CUBIC_DIA;
           } else if (n543 == 6 && n544 == 6) {
-            _structureType[ii] = HEX_DIA;
+            structureType = HEX_DIA;
           } else {
             continue;
           }
@@ -747,7 +814,7 @@ namespace FIXDXA_NS {
         std::iota(neighborMapping.begin(), neighborMapping.end(), 0);
         std::array<int, _maxNeighCount> previousMapping;
         std::fill(previousMapping.begin(), previousMapping.end(), -1);
-        const auto &crystalStructure = _crystalStructures[_structureType[ii]];
+        const auto &crystalStructure = _crystalStructures[structureType];
         // const auto &crystalStructure = _crystalStructures[_inputStructure];
         while (true) {
           int n1 = 0;
@@ -767,6 +834,7 @@ namespace FIXDXA_NS {
             if (n2 != n1) { break; }
           }
           if (n1 == _neighCount) {
+            _structureType[ii] = structureType;
             // Save the atom's neighbor list.
             for (int i = 0; i < _neighCount; i++) {
               assert(neighborMapping[i] < _neighCount);
@@ -955,6 +1023,7 @@ namespace FIXDXA_NS {
     utils::logmesg(lmp, "Start of connectClusters() on rank {}\n", me);
 
     for (int currentAtom = 0; currentAtom < atom->nlocal; ++currentAtom) {
+
       // Cluster of current atom
       if (_atomClusterType[currentAtom] == INVALID) { continue; }
       size_t cluster1Index = _clusterGraph.findCluster(_atomClusterType[currentAtom]);
@@ -971,7 +1040,7 @@ namespace FIXDXA_NS {
 
         // Skip neighbor atoms belonging to the same cluster or to no cluster at all.
         if (_atomClusterType[neighIdx] == INVALID ||
-            _atomClusterType[currentAtom] == _atomClusterType[jj]) {
+            _atomClusterType[currentAtom] == _atomClusterType[neighIdx]) {
           // !TODO! ALEX: WHY IS THERE THE ADD NEIGHBOR LIST -> StructureAnalysis :992:
           continue;
         }
@@ -983,7 +1052,7 @@ namespace FIXDXA_NS {
         {
           size_t clusterTransition = _clusterGraph.findClusterTransition(
               _atomClusterType[currentAtom], _atomClusterType[neighIdx]);
-          if (clusterTransition == _clusterGraph.clusterTransitions.size()) { continue; }
+          if (clusterTransition != _clusterGraph.clusterTransitions.size()) { continue; }
         }
 
         // Find common neighbors of central and neighboring atom
@@ -1032,6 +1101,10 @@ namespace FIXDXA_NS {
       }
     }
 
+    utils::logmesg(lmp, "Clusters on rank {}: {}\n", me, _clusterGraph.clusters.size());
+    utils::logmesg(lmp, "Clusters transitions on rank {}: {}\n", me,
+                   _clusterGraph.clusterTransitions.size());
+
     utils::logmesg(lmp, "End of connectClusters() on rank {}\n", me);
   }
 
@@ -1040,7 +1113,7 @@ namespace FIXDXA_NS {
     // if (_inputStructure == FCC || _inputStructure == BCC || _inputStructure == HCP) {
     //   neighbor->build_one(_neighList);
     // }
-    buildNNList();
+    // buildNNList();
     identifyCrystalStructure();
     buildClusters();
     assert(_atomClusterType.size() >= atom->nlocal);
@@ -1050,7 +1123,7 @@ namespace FIXDXA_NS {
       _output[i][1] = static_cast<double>(_atomClusterType[i]);
     }
     array_atom = _output;
-    // connectClusters();
+    connectClusters();
   }
 
   void FixDXA::init()
