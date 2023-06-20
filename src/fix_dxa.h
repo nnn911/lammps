@@ -315,6 +315,8 @@ namespace FIXDXA_NS {
 
     double getSqNeighDistance(int, int);
 
+    void write_cluster_transitions() const;
+
     static constexpr size_t _maxNeighCount = 16;
     static constexpr size_t _minNarg = 5;
     const StructureType _inputStructure;
@@ -322,7 +324,8 @@ namespace FIXDXA_NS {
 
     int me;
 
-    CommSteps _commStep = STRUCTURE;
+    int comm_forward = 2;
+    CommSteps _commStep = NOCOM;
 
     // std::vector<tagint> _nnListIdx;
     std::vector<int> _nnList;

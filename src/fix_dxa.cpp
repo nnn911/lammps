@@ -18,7 +18,9 @@
 #include "neighbor.h"
 #include "utils.h"
 #include <deque>
+#include <fstream>
 #include <numeric>
+#include <string>
 
 // !TODO! remove
 #include <unistd.h>
@@ -602,6 +604,8 @@ namespace FIXDXA_NS {
     double localCutoffSquared = 0;
     _neighborIndices.clear();
     _neighborIndices.resize(ntotal);
+
+    // TODO: This only needs to run for nlocal!
     for (int ii = 0; ii < ntotal; ++ii) {
       {
         auto atomTag = atomTags[ii];
@@ -872,10 +876,12 @@ namespace FIXDXA_NS {
     }
     utils::logmesg(lmp, "\n");
 
+    // TODO: only comm once after cluster build
     // comm_forward = 1;
     // _commStep = STRUCTURE;
-    // comm->forward_comm(this);
-    // _commStep = INVALID;
+    // comm->forward_comm(this, 1);
+    // _commStep = NOCOM;
+
     utils::logmesg(lmp, "End of identifyCrystalStructure() on rank {}\n", me);
   }
 
@@ -897,8 +903,7 @@ namespace FIXDXA_NS {
   void FixDXA::buildClusters()
   {
     utils::logmesg(lmp, "Start of buildClusters() on rank {}\n", me);
-    // comm_forward = _neighCount;
-    // comm_reverse = _neighCount;
+
     tagint *atomTags = atom->tag;
     double **x = atom->x;
 
@@ -914,8 +919,8 @@ namespace FIXDXA_NS {
 
     for (int ii = 0; ii < atom->nlocal; ++ii) {
 
-      auto debugStartingPos = std::find(atomTags, atomTags + atom->natoms, ii + 1);
-      int iiTag = std::distance(atomTags, debugStartingPos);
+      // auto debugStartingPos = std::find(atomTags, atomTags + atom->natoms, ii + 1);
+      // int iiTag = std::distance(atomTags, debugStartingPos);
 
       if (_atomClusterType[ii] != INVALID) continue;
       if (_structureType[ii] == OTHER) continue;
@@ -936,6 +941,9 @@ namespace FIXDXA_NS {
 
         const Vector3d iiPosition = xToVector(x[currentAtom]);    // xToVector(x[ii]);
         for (int jj = 0; jj < _neighCount; ++jj) {
+
+          // TODO: HERE we might be able to skip all ghost atoms -> because we don't need their orientation etc. It will be replaced in the comm step!
+
           const int neighIdx =
               _neighborIndices[currentAtom][jj];    // _nnList[_neighCount * ii + jj];
           // utils::logmesg(lmp, "\nAtom tag: {} Neigh tag: {}\n", atomTags[currentAtom],
@@ -994,6 +1002,7 @@ namespace FIXDXA_NS {
             // printMat(crystalStructure.permutations[i].transformation, lmp);
             if (transition.equals(crystalStructure.permutations[i].transformation,
                                   TRANSITION_MATRIX_EPSILON)) {
+              assert(_atomClusterType[ii] == _atomClusterType[currentAtom]);
               _atomClusterType[neighIdx] = _atomClusterType[ii];    // atomTags[currentAtom];
               _atomSymmetryPermutations[neighIdx] = i;
               // atomQueue.push_back(neighIdx);
@@ -1008,11 +1017,25 @@ namespace FIXDXA_NS {
       _clusterGraph.clusters[clusterIndex].orientation = orientationW * orientationV.inverse();
     }
 
+    // Reorient atoms to align clusters with global coordinate system.
+    // for (size_t ii = 0; ii < atom->nlocal; ++ii) {
+    //   int clusterId = _atomClusterType[ii];
+    //   if (clusterId == INVALID) continue;
+    //   int clusterIndex = _clusterGraph.findCluster(clusterId);
+    //   assert(clusterIndex < _clusterGraph.clusters.size());
+    //   Cluster &cluster = _clusterGraph.clusters[clusterIndex];
+
+    //   const auto &crystalStructure = _crystalStructures[cluster.structure];
+    //   int oldSymmetryPermutation = _atomSymmetryPermutations[ii];
+    //   int newSymmetryPermutation = crystalStructure.permutations[oldSymmetryPermutation]
+    //                                    .inverseProduct[cluster->symmetryTransformation];
+    //   _atomSymmetryPermutations[atomIndex] = newSymmetryPermutation;
+    // }
     // !TODO! -> ASK ALEX ABOUT THE REORIENT -> StructureAnalysis.cpp :909-947:
 
-    comm_forward = 2;
+    // comm_forward = 2;
     _commStep = CLUSTER;
-    comm->forward_comm(this);
+    comm->forward_comm(this, 2);
     _commStep = NOCOM;
 
     utils::logmesg(lmp, "End of buildClusters() on rank {}\n", me);
@@ -1021,8 +1044,11 @@ namespace FIXDXA_NS {
   void FixDXA::connectClusters()
   {
     utils::logmesg(lmp, "Start of connectClusters() on rank {}\n", me);
+    tagint *atomTags = atom->tag;
 
     for (int currentAtom = 0; currentAtom < atom->nlocal; ++currentAtom) {
+
+      auto atomTag = atomTags[currentAtom];
 
       // Cluster of current atom
       if (_atomClusterType[currentAtom] == INVALID) { continue; }
@@ -1044,9 +1070,6 @@ namespace FIXDXA_NS {
           // !TODO! ALEX: WHY IS THERE THE ADD NEIGHBOR LIST -> StructureAnalysis :992:
           continue;
         }
-
-        size_t cluster2Index = _clusterGraph.findCluster(_atomClusterType[neighIdx]);
-        assert(cluster2Index < _clusterGraph.clusters.size());
 
         // Skip if there is already a transition between the two clusters.
         {
@@ -1082,9 +1105,9 @@ namespace FIXDXA_NS {
           // Look up symmetry permutation of neighbor atom.
           const auto &neighCrystalStructure = _crystalStructures[_structureType[neighIdx]];
           const auto &neighPermutation =
-              crystalStructure.permutations[_atomSymmetryPermutations[neighIdx]].permutation;
+              neighCrystalStructure.permutations[_atomSymmetryPermutations[neighIdx]].permutation;
 
-          tm2.column(i) = crystalStructure.latticeVectors[neighPermutation[d]];
+          tm2.column(i) = neighCrystalStructure.latticeVectors[neighPermutation[d]];
         }
         if (!overlap) { continue; }
 
@@ -1108,6 +1131,24 @@ namespace FIXDXA_NS {
     utils::logmesg(lmp, "End of connectClusters() on rank {}\n", me);
   }
 
+  void FixDXA::write_cluster_transitions() const
+  {
+    utils::logmesg(lmp, "Start of write_cluster_transitions() on rank {}\n", me);
+
+    const std::string fname = fmt::format("cluster_transition_rank_{}.data", me);
+    std::ofstream outFile(fname);
+    if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
+    outFile << _clusterGraph.clusterTransitions.size() << '\n';
+    for (const auto &t : _clusterGraph.clusterTransitions) {
+      outFile << fmt::format(
+          "{} {} {} {} {} {} {} {} {} {} {}\n", t.cluster1, t.cluster2, t.transition.column(0)[0],
+          t.transition.column(1)[0], t.transition.column(2)[0], t.transition.column(0)[1],
+          t.transition.column(1)[1], t.transition.column(2)[1], t.transition.column(0)[2],
+          t.transition.column(1)[2], t.transition.column(2)[2]);
+    }
+    utils::logmesg(lmp, "End of write_cluster_transitions() on rank {}\n", me);
+  }
+
   void FixDXA::end_of_step()
   {
     // if (_inputStructure == FCC || _inputStructure == BCC || _inputStructure == HCP) {
@@ -1124,6 +1165,7 @@ namespace FIXDXA_NS {
     }
     array_atom = _output;
     connectClusters();
+    write_cluster_transitions();
   }
 
   void FixDXA::init()
@@ -1132,14 +1174,6 @@ namespace FIXDXA_NS {
       error->all(FLERR, "Fix DXA requires atoms having IDs. Please use 'atom_modify id yes'");
     neighbor->add_request(this,
                           NeighConst::REQ_FULL | NeighConst::REQ_DEFAULT | NeighConst::REQ_GHOST);
-    // if (_inputStructure == FCC || _inputStructure == BCC || _inputStructure == HCP) {
-    //   neighbor->add_request(this, NeighConst::REQ_FULL | NeighConst::REQ_OCCASIONAL);
-    // } else if (_inputStructure == CUBIC_DIA || _inputStructure == HEX_DIA) {
-    //   neighbor->add_request(this,
-    //                         NeighConst::REQ_FULL | NeighConst::REQ_DEFAULT | NeighConst::REQ_GHOST);
-    // } else {
-    //   unreachable(lmp);
-    // }
   }
 
   void FixDXA::init_list(int, NeighList *ptr)
@@ -1156,38 +1190,28 @@ namespace FIXDXA_NS {
 
   void FixDXA::setup(int)
   {
-    // if (me == 0) {
     utils::logmesg(lmp, "Fix DXA version {}\n", VERSION);
-    // }
-    // else {
-    //   struct timespec delta = {0 /*secs*/, 500000000L /*nanosecs*/};
-    //   nanosleep(&delta, &delta);
-    // }
     end_of_step();
   }
 
   double FixDXA::memory_usage()
   {
-    // return atom->nmax * _neighCount * sizeof(tagint);
     return 0;
   }
 
   void FixDXA::grow_arrays(int nmax)
   {
-    _neighborIndices.resize(nmax);
     memory->grow(_output, nmax, 2, _outputName.c_str());
   }
 
   void FixDXA::copy_arrays(int i, int j, int delflag)
   {
-    _neighborIndices[j] = _neighborIndices[i];
     _output[j][0] = _output[i][0];
     _output[j][1] = _output[i][1];
   }
 
   void FixDXA::set_arrays(int i)
   {
-    _neighborIndices[i].fill(0);
     _output[i][0] = -1;
     _output[i][1] = -1;
   }
@@ -1222,16 +1246,19 @@ namespace FIXDXA_NS {
   }
   void FixDXA::unpack_forward_comm(int n, int first, double *buf)
   {
-    _structureType.resize(first + n);
     int m = 0;
     switch (_commStep) {
       case STRUCTURE:
+        _structureType.resize(first + n);
         for (int i = first, last = first + n; i < last; ++i) {
           assert(i < _structureType.size());
           _structureType[i] = static_cast<StructureType>(ubuf(buf[m++]).i);
+          auto s = _structureType[i];
         }
         break;
       case CLUSTER:
+        _atomClusterType.resize(first + n);
+        _atomSymmetryPermutations.resize(first + n);
         for (int i = first, last = first + n; i < last; ++i) {
           assert(i < _atomClusterType.size());
           assert(i < _atomSymmetryPermutations.size());
@@ -1244,21 +1271,5 @@ namespace FIXDXA_NS {
         break;
     }
   }
-  // int FixDXA::pack_exchange(int i, double *buf)
-  // {
-  //   int m = 0;
-  //   for (int j = 0; j < _neighCount; ++j) { buf[m++] = ubuf(_neighborIndices[i][j]).d; }
-  //   return m;
-  // }
-
-  // int FixDXA::unpack_exchange(int nlocal, double *buf)
-  // {
-  //   int m = 0;
-  //   for (int j = 0; j < _neighCount; ++j) {
-  //     _neighborIndices[nlocal][j] = (tagint) ubuf(buf[m++]).i;
-  //   }
-  //   return m;
-  // }
-
 }    // namespace FIXDXA_NS
 }    // namespace LAMMPS_NS
