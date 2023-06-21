@@ -41,9 +41,17 @@ namespace FIXDXA_NS {
 #endif
   }
 
-  //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-  // FIXDXA
-  //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  /*++++++++++++++++++++++++++++++++++++++++++++
+   _                                          
+  | |                                         
+  | |     __ _ _ __ ___  _ __ ___  _ __  ___  
+  | |    / _` | '_ ` _ \| '_ ` _ \| '_ \/ __| 
+  | |___| (_| | | | | | | | | | | | |_) \__ \ 
+  \_____/\__,_|_| |_| |_|_| |_| |_| .__/|___/ 
+                                  | |         
+                                  |_|         
+  ++++++++++++++++++++++++++++++++++++++++++++*/
+
   [[nodiscard]] static StructureType getInputStructure(int narg, char **arg, int minNArg)
   {
     if (narg < minNArg) { return OTHER; }
@@ -113,6 +121,78 @@ namespace FIXDXA_NS {
     atom->delete_callback(id, Atom::GROW);
     memory->destroy(_output);
   }
+
+  void FixDXA::end_of_step()
+  {
+    identifyCrystalStructure();
+    buildClusters();
+    assert(_atomClusterType.size() >= atom->nlocal);
+    assert(_structureType.size() >= atom->nlocal);
+    for (int i = 0; i < atom->nlocal; ++i) {
+      _output[i][0] = static_cast<double>(static_cast<int>(_structureType[i]));
+      _output[i][1] = static_cast<double>(_atomClusterType[i]);
+    }
+    array_atom = _output;
+    connectClusters();
+    write_cluster_transitions();
+  }
+
+  void FixDXA::init()
+  {
+    if (!(atom->tag_enable))
+      error->all(FLERR, "Fix DXA requires atoms having IDs. Please use 'atom_modify id yes'");
+    neighbor->add_request(this,
+                          NeighConst::REQ_FULL | NeighConst::REQ_DEFAULT | NeighConst::REQ_GHOST);
+  }
+
+  void FixDXA::init_list(int, NeighList *ptr)
+  {
+    _neighList = ptr;
+  }
+
+  int FixDXA::setmask()
+  {
+    int mask = 0;
+    mask |= FixConst::END_OF_STEP;
+    return mask;
+  }
+
+  void FixDXA::setup(int)
+  {
+    utils::logmesg(lmp, "Fix DXA version {}\n", VERSION);
+    end_of_step();
+  }
+
+  double FixDXA::memory_usage()
+  {
+    return 0;
+  }
+
+  void FixDXA::grow_arrays(int nmax)
+  {
+    memory->grow(_output, nmax, 2, _outputName.c_str());
+  }
+
+  void FixDXA::copy_arrays(int i, int j, int delflag)
+  {
+    _output[j][0] = _output[i][0];
+    _output[j][1] = _output[i][1];
+  }
+
+  void FixDXA::set_arrays(int i)
+  {
+    _output[i][0] = -1;
+    _output[i][1] = -1;
+  }
+
+  /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    _____ _                   _                    _____    _            _   _  __ _           _   _
+   /  ___| |                 | |                  |_   _|  | |          | | (_)/ _(_)         | | (_)
+   \ `--.| |_ _ __ _   _  ___| |_ _   _ _ __ ___    | |  __| | ___ _ __ | |_ _| |_ _  ___ __ _| |_ _  ___  _ __
+    `--. \ __| '__| | | |/ __| __| | | | '__/ _ \   | | / _` |/ _ \ '_ \| __| |  _| |/ __/ _` | __| |/ _ \| '_ \ 
+   /\__/ / |_| |  | |_| | (__| |_| |_| | | |  __/  _| || (_| |  __/ | | | |_| | | | | (_| (_| | |_| | (_) | | | |
+   \____/ \__|_|   \__,_|\___|\__|\__,_|_|  \___|  \___/\__,_|\___|_| |_|\__|_|_| |_|\___\__,_|\__|_|\___/|_| |_|
+  ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 
   template <typename iterator> void bitmapSort(iterator begin, iterator end, size_t size)
   {
@@ -829,16 +909,6 @@ namespace FIXDXA_NS {
     utils::logmesg(lmp, "End of identifyCrystalStructure() on rank {}\n", me);
   }
 
-  static inline void printMat(const Matrix3d mat, LAMMPS_NS::LAMMPS *lmp)
-  {
-    utils::logmesg(lmp, "\n");
-    for (int i = 0; i < 3; ++i) {
-      for (int j = 0; j < 3; ++j) { utils::logmesg(lmp, "{} ", mat(i, j)); }
-      utils::logmesg(lmp, "\n");
-    }
-    utils::logmesg(lmp, "\n");
-  }
-
   static inline Vector3d xToVector(double *x)
   {
     return {x[0], x[1], x[2]};
@@ -1090,68 +1160,14 @@ namespace FIXDXA_NS {
     utils::logmesg(lmp, "End of write_cluster_transitions() on rank {}\n", me);
   }
 
-  void FixDXA::end_of_step()
-  {
-    identifyCrystalStructure();
-    buildClusters();
-    assert(_atomClusterType.size() >= atom->nlocal);
-    assert(_structureType.size() >= atom->nlocal);
-    for (int i = 0; i < atom->nlocal; ++i) {
-      _output[i][0] = static_cast<double>(static_cast<int>(_structureType[i]));
-      _output[i][1] = static_cast<double>(_atomClusterType[i]);
-    }
-    array_atom = _output;
-    connectClusters();
-    write_cluster_transitions();
-  }
-
-  void FixDXA::init()
-  {
-    if (!(atom->tag_enable))
-      error->all(FLERR, "Fix DXA requires atoms having IDs. Please use 'atom_modify id yes'");
-    neighbor->add_request(this,
-                          NeighConst::REQ_FULL | NeighConst::REQ_DEFAULT | NeighConst::REQ_GHOST);
-  }
-
-  void FixDXA::init_list(int, NeighList *ptr)
-  {
-    _neighList = ptr;
-  }
-
-  int FixDXA::setmask()
-  {
-    int mask = 0;
-    mask |= FixConst::END_OF_STEP;
-    return mask;
-  }
-
-  void FixDXA::setup(int)
-  {
-    utils::logmesg(lmp, "Fix DXA version {}\n", VERSION);
-    end_of_step();
-  }
-
-  double FixDXA::memory_usage()
-  {
-    return 0;
-  }
-
-  void FixDXA::grow_arrays(int nmax)
-  {
-    memory->grow(_output, nmax, 2, _outputName.c_str());
-  }
-
-  void FixDXA::copy_arrays(int i, int j, int delflag)
-  {
-    _output[j][0] = _output[i][0];
-    _output[j][1] = _output[i][1];
-  }
-
-  void FixDXA::set_arrays(int i)
-  {
-    _output[i][0] = -1;
-    _output[i][1] = -1;
-  }
+  /*++++++++++++++++++++++++++++++++
+    _____
+   /  __ \                          
+   | /  \/ ___  _ __ ___  _ __ ___
+   | |    / _ \| '_ ` _ \| '_ ` _ \ 
+   | \__/\ (_) | | | | | | | | | | |
+    \____/\___/|_| |_| |_|_| |_| |_|
+  ++++++++++++++++++++++++++++++++++*/
 
   void FixDXA::pack_neighborIndices_forward_comm()
   {
