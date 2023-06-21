@@ -92,10 +92,12 @@ namespace FIXDXA_NS {
       initializeStructures();
       structuresInitialized = true;
     }
+    comm_forward = std::max(2, _neighCount + 1);
 
     peratom_flag = 1;
     size_peratom_cols = 2;
     peratom_freq = nevery;
+
     memory->create(_output, atom->nlocal, 2, _outputName.c_str());
     array_atom = _output;
     atom->add_callback(Atom::GROW);
@@ -353,13 +355,6 @@ namespace FIXDXA_NS {
         }
       }
     }
-    // {
-    //   const auto &l = _crystalStructures[FCC];
-    //   for (int i = 0; i < l.commonNeighbors.size(); ++i) {
-    //     utils::logmesg(lmp, "{} ", l.commonNeighbors[i][0]);
-    //     utils::logmesg(lmp, "{}\n", l.commonNeighbors[i][1]);
-    //   }
-    // }
     //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     // Generate symmetries
     //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -458,61 +453,7 @@ namespace FIXDXA_NS {
         }
       }
     }
-    // {
-    //   const auto &l = _crystalStructures[FCC];
-    //   utils::logmesg(lmp, "permutation size {}\n", l.permutations.size());
-    //   for (int i = 0; i < l.permutations.size(); ++i) {
-    //     utils::logmesg(lmp, "\n");
-    //     for (int r = 0; r < 3; ++r) {
-    //       for (int c = 0; c < 3; ++c) {
-    //         utils::logmesg(lmp, "{} ", l.permutations[i].transformation(r, c));
-    //       }
-    //       utils::logmesg(lmp, "\n");
-    //     }
-    //   }
-    // }
   }
-
-  // void FixDXA::buildNNList()
-  // {
-  //   double **x = atom->x;
-  //   const int inum = _neighList->inum;
-  //   assert(_neighList->inum == atom->nlocal);
-  //   const int gnum = _neighList->gnum;
-  //   assert(_neighList->gnum == atom->nghost);
-  //   const int nmax = inum + gnum;
-
-  //   _nnList.clear();
-  //   _nnList.reserve(nmax * _neighCount);
-
-  //   std::vector<std::pair<int, double>> neighList;
-
-  //   for (int ii = 0; ii < nmax; ++ii) {
-  //     const int i = _neighList->ilist[ii];
-  //     const int *jlist = _neighList->firstneigh[i];
-  //     const int jnum = _neighList->numneigh[i];
-  //     assert((ii < inum) ? jnum > _neighCount : true);
-
-  //     neighList.resize(std::max(jnum, _neighCount));
-  //     for (int jj = 0; jj < std::max(jnum, _neighCount); ++jj) {
-  //       if (jj < jnum) {
-  //         int j = jlist[jj];
-  //         j &= NEIGHMASK;
-  //         neighList[jj] = {j, 0.0};
-  //         for (int k = 0; k < 3; ++k) {
-  //           neighList[jj].second += (x[i][k] - x[j][k]) * (x[i][k] - x[j][k]);
-  //         }
-  //       } else {
-  //         neighList[jj] = {-1, std::numeric_limits<double>::max()};
-  //       }
-  //     }
-  //     std::partial_sort(neighList.begin(), neighList.begin() + _neighCount, neighList.end(),
-  //                       [](const std::pair<int, double> &a, const std::pair<int, double> &b) {
-  //                         return a.second < b.second;
-  //                       });
-  //     for (int jj = 0; jj < _neighCount; ++jj) { _nnList.push_back(neighList[jj].first); }
-  //   }
-  // }
 
   void FixDXA::buildNNList(int ii, int numNeigh)
   {
@@ -581,6 +522,12 @@ namespace FIXDXA_NS {
     return sqDistance;
   }
 
+  void FixDXA::initialize_neighborIndices(size_t numElements)
+  {
+    _neighborIndices.resize(numElements);
+    for (auto &ni : _neighborIndices) { std::fill(ni.begin(), ni.end(), -1); }
+  }
+
   void FixDXA::identifyCrystalStructure()
   {
     utils::logmesg(lmp, "Start of identifyCrystalStructure() on rank {}\n", me);
@@ -592,8 +539,7 @@ namespace FIXDXA_NS {
     std::vector<CNANeighbor> neighborVectors1;
     std::vector<CNANeighbor> neighborVectors2;
     NeighborBondArray<_maxNeighCount> neighborArray;
-    // const int inum = _neighList->inum;
-    // const int inum = atom->nlocal + atom->nghost;
+
     const int ntotal = atom->nlocal + atom->nghost;
     const int nlocal = atom->nlocal;
     std::array<int, _maxNeighCount> cnaSignatures;
@@ -602,11 +548,10 @@ namespace FIXDXA_NS {
     std::fill(_structureType.begin(), _structureType.end(), OTHER);
 
     double localCutoffSquared = 0;
-    _neighborIndices.clear();
-    _neighborIndices.resize(ntotal);
+    initialize_neighborIndices(ntotal);
 
     // TODO: This only needs to run for nlocal!
-    for (int ii = 0; ii < ntotal; ++ii) {
+    for (int ii = 0; ii < nlocal; ++ii) {
       {
         auto atomTag = atomTags[ii];
         double localCutoff = 0;
@@ -819,7 +764,7 @@ namespace FIXDXA_NS {
         std::array<int, _maxNeighCount> previousMapping;
         std::fill(previousMapping.begin(), previousMapping.end(), -1);
         const auto &crystalStructure = _crystalStructures[structureType];
-        // const auto &crystalStructure = _crystalStructures[_inputStructure];
+
         while (true) {
           int n1 = 0;
           while (neighborMapping[n1] == previousMapping[n1]) { n1++; }
@@ -850,8 +795,6 @@ namespace FIXDXA_NS {
                 }
               }
 #endif
-              // assert(neighborVectors[neighborMapping[i]].idx == ii);
-              // assert(neighborVectors[neighborMapping[i]].neighIdx != ii);
               _neighborIndices[ii][i] = neighborVectors[neighborMapping[i]].neighIdx;
             }
             break;
@@ -871,16 +814,17 @@ namespace FIXDXA_NS {
     for (int ii = 0; ii < atom->nlocal; ++ii) {
       summary[static_cast<size_t>(_structureType[ii])] += 1;
     }
+    utils::logmesg(lmp, "Rank {}:\n", me);
     for (int i = 0; i < summary.size(); ++i) {
       utils::logmesg(lmp, "\nstructure {}: {} / {}", i, summary[i], atom->nlocal);
     }
     utils::logmesg(lmp, "\n");
 
-    // TODO: only comm once after cluster build
-    // comm_forward = 1;
-    // _commStep = STRUCTURE;
-    // comm->forward_comm(this, 1);
-    // _commStep = NOCOM;
+    pack_neighborIndices_forward_comm();
+    _commStep = STRUCTURE_NEIGHS;
+    comm->forward_comm(this, _neighCount + 1);
+    _commStep = NOCOM;
+    unpack_neighborIndices_forward_comm();
 
     utils::logmesg(lmp, "End of identifyCrystalStructure() on rank {}\n", me);
   }
@@ -908,7 +852,6 @@ namespace FIXDXA_NS {
     double **x = atom->x;
 
     _atomClusterType.resize(atom->nmax);
-    // const tagint INVALID = std::numeric_limits<tagint>::min();
 
     std::fill(_atomClusterType.begin(), _atomClusterType.end(), INVALID);
 
@@ -918,9 +861,6 @@ namespace FIXDXA_NS {
     std::deque<int> atomQueue{};
 
     for (int ii = 0; ii < atom->nlocal; ++ii) {
-
-      // auto debugStartingPos = std::find(atomTags, atomTags + atom->natoms, ii + 1);
-      // int iiTag = std::distance(atomTags, debugStartingPos);
 
       if (_atomClusterType[ii] != INVALID) continue;
       if (_structureType[ii] == OTHER) continue;
@@ -939,15 +879,13 @@ namespace FIXDXA_NS {
         const int symmetryPermutation = _atomSymmetryPermutations[currentAtom];
         const auto &permutation = crystalStructure.permutations[symmetryPermutation].permutation;
 
-        const Vector3d iiPosition = xToVector(x[currentAtom]);    // xToVector(x[ii]);
+        const Vector3d iiPosition = xToVector(x[currentAtom]);
         for (int jj = 0; jj < _neighCount; ++jj) {
 
           // TODO: HERE we might be able to skip all ghost atoms -> because we don't need their orientation etc. It will be replaced in the comm step!
 
-          const int neighIdx =
-              _neighborIndices[currentAtom][jj];    // _nnList[_neighCount * ii + jj];
-          // utils::logmesg(lmp, "\nAtom tag: {} Neigh tag: {}\n", atomTags[currentAtom],
-          //                atomTags[neighIdx]);
+          const int neighIdx = _neighborIndices[currentAtom][jj];
+          assert(neighIdx != -1);
           const Vector3d &latticeVector = crystalStructure.latticeVectors[permutation[jj]];
           Vector3d spatialVector = xToVector(x[neighIdx]) - iiPosition;
           for (int i = 0; i < 3; ++i) {
@@ -957,19 +895,16 @@ namespace FIXDXA_NS {
             }
           }
 
-          // printMat(orientationV, lmp);
-          // printMat(orientationW, lmp);
-
           if (_atomClusterType[neighIdx] != INVALID) { continue; }
           if (_structureType[neighIdx] != _inputStructure) { continue; }
-          // return;
+
           Matrix3d tm1, tm2;
           bool overlap = true;
           for (int i = 0; i < 3; i++) {
             int atomIndex;
             if (i != 2) {
-              //_nnList[ii * _neighCount + crystalStructure.commonNeighbors[jj][i]];
               atomIndex = _neighborIndices[currentAtom][crystalStructure.commonNeighbors[jj][i]];
+              assert(atomIndex != -1);
               tm1.column(i) =
                   crystalStructure
                       .latticeVectors[permutation[crystalStructure.commonNeighbors[jj][i]]] -
@@ -978,8 +913,6 @@ namespace FIXDXA_NS {
               atomIndex = currentAtom;
               tm1.column(i) = -crystalStructure.latticeVectors[permutation[jj]];
             }
-            // auto pos = std::find(_nnList.begin() + neighIdx * _neighCount,
-            //  _nnList.begin() + (neighIdx + 1) * _neighCount, atomIndex);
             auto pos = std::find(_neighborIndices[neighIdx].begin(),
                                  _neighborIndices[neighIdx].begin() + _neighCount, atomIndex);
             if (*pos != atomIndex) {
@@ -997,17 +930,13 @@ namespace FIXDXA_NS {
           if (!tm2.inverse(tm2inverse)) { continue; }
           Matrix3d transition = tm1 * tm2inverse;
 
-          // printMat(transition, lmp);
           for (int i = 0; i < crystalStructure.permutations.size(); ++i) {
-            // printMat(crystalStructure.permutations[i].transformation, lmp);
             if (transition.equals(crystalStructure.permutations[i].transformation,
                                   TRANSITION_MATRIX_EPSILON)) {
               assert(_atomClusterType[ii] == _atomClusterType[currentAtom]);
-              _atomClusterType[neighIdx] = _atomClusterType[ii];    // atomTags[currentAtom];
+              _atomClusterType[neighIdx] = _atomClusterType[ii];
               _atomSymmetryPermutations[neighIdx] = i;
-              // atomQueue.push_back(neighIdx);
               if (neighIdx < atom->nlocal) { atomQueue.push_back(neighIdx); }
-              // utils::logmesg(lmp, "\nSym idx = {} neigh tag = {}\n", i, atomTags[neighIdx]);
               break;
             }
           }
@@ -1033,12 +962,22 @@ namespace FIXDXA_NS {
     // }
     // !TODO! -> ASK ALEX ABOUT THE REORIENT -> StructureAnalysis.cpp :909-947:
 
-    // comm_forward = 2;
     _commStep = CLUSTER;
     comm->forward_comm(this, 2);
     _commStep = NOCOM;
 
     utils::logmesg(lmp, "End of buildClusters() on rank {}\n", me);
+  }
+
+  bool FixDXA::addNeighborIndex(int neighListIndex, int indexToAdd)
+  {
+    for (size_t i = 0; i < _neighCount; ++i) {
+      if (_neighborIndices[neighListIndex][i] == -1) {
+        _neighborIndices[neighListIndex][i] = indexToAdd;
+        return true;
+      }
+    }
+    return false;
   }
 
   void FixDXA::connectClusters()
@@ -1063,11 +1002,12 @@ namespace FIXDXA_NS {
       // Visit neighbors of the current atom.
       for (int jj = 0; jj < _neighCount; ++jj) {
         const int neighIdx = _neighborIndices[currentAtom][jj];
+        assert(neighIdx != -1);
 
         // Skip neighbor atoms belonging to the same cluster or to no cluster at all.
         if (_atomClusterType[neighIdx] == INVALID ||
             _atomClusterType[currentAtom] == _atomClusterType[neighIdx]) {
-          // !TODO! ALEX: WHY IS THERE THE ADD NEIGHBOR LIST -> StructureAnalysis :992:
+          bool success = addNeighborIndex(neighIdx, currentAtom);
           continue;
         }
 
@@ -1085,6 +1025,7 @@ namespace FIXDXA_NS {
           int atomIndex;
           if (i != 2) {
             atomIndex = _neighborIndices[currentAtom][crystalStructure.commonNeighbors[jj][i]];
+            assert(atomIndex != -1);
             tm1.column(i) =
                 crystalStructure
                     .latticeVectors[permutation[crystalStructure.commonNeighbors[jj][i]]] -
@@ -1151,10 +1092,6 @@ namespace FIXDXA_NS {
 
   void FixDXA::end_of_step()
   {
-    // if (_inputStructure == FCC || _inputStructure == BCC || _inputStructure == HCP) {
-    //   neighbor->build_one(_neighList);
-    // }
-    // buildNNList();
     identifyCrystalStructure();
     buildClusters();
     assert(_atomClusterType.size() >= atom->nlocal);
@@ -1216,6 +1153,61 @@ namespace FIXDXA_NS {
     _output[i][1] = -1;
   }
 
+  void FixDXA::pack_neighborIndices_forward_comm()
+  {
+    utils::logmesg(lmp, "Start of pack_neighborIndices_forward_comm() on rank {}\n", me);
+
+    _neighborTags.resize(atom->nlocal);
+    tagint *atomTags = atom->tag;
+    for (size_t i = 0; i < atom->nlocal; ++i) {
+      for (size_t j = 0; j < _neighCount; ++j) {
+        _neighborTags[i][j] = (_neighborIndices[i][j] != -1) ? atomTags[_neighborIndices[i][j]]
+                                                             : -1;
+      }
+    }
+    utils::logmesg(lmp, "End of pack_neighborIndices_forward_comm() on rank {}\n", me);
+  }
+
+  void FixDXA::unpack_neighborIndices_forward_comm()
+  {
+    utils::logmesg(lmp, "Start of unpack_neighborIndices_forward_comm() on rank {}\n", me);
+
+    size_t ntotal = atom->nlocal + atom->nghost;
+    assert(_neighborTags.size() == ntotal);
+
+    tagint *atomTags = atom->tag;
+    for (size_t i = atom->nlocal; i < ntotal; ++i) {
+      const int ni = _neighList->ilist[i];
+      const int *jlist = _neighList->firstneigh[ni];
+      const int jnum = _neighList->numneigh[ni];
+
+      const Vector3d vstart = xToVector(atom->x[i]);
+
+      for (size_t j = 0; j < _neighCount; ++j) {
+        if (_neighborTags[i][j] == -1) {
+          assert((j < _neighCount) ? _structureType[i] == OTHER : true);
+          continue;
+        }
+
+        int bestIndex = -1;
+        double minDist = std::numeric_limits<double>::max();
+        for (int k = 0; k < jnum; ++k) {
+          int jj = jlist[k];
+          jj &= NEIGHMASK;
+          if (atomTags[jj] == _neighborTags[i][j]) {
+            double dist = (vstart - xToVector(atom->x[jj])).lengthSquared();
+            if (dist < minDist) {
+              minDist = dist;
+              bestIndex = jj;
+            }
+          }
+        }
+        _neighborIndices[i][j] = bestIndex;
+      }
+    }
+    utils::logmesg(lmp, "End of unpack_neighborIndices_forward_comm() on rank {}\n", me);
+  }
+
   int FixDXA::pack_forward_comm(int n, int *list, double *buf, int /*pbc_flag*/, int * /*pbc*/)
   {
     int m = 0;
@@ -1226,6 +1218,18 @@ namespace FIXDXA_NS {
           j = list[i];
           assert(j < _structureType.size());
           buf[m++] = ubuf(static_cast<int>(_structureType[j])).d;
+        }
+        break;
+      case STRUCTURE_NEIGHS:
+        for (int i = 0; i < n; ++i) {
+          j = list[i];
+          assert(j < _structureType.size());
+          buf[m++] = ubuf(static_cast<int>(_structureType[j])).d;
+        }
+        for (int i = 0; i < n; ++i) {
+          j = list[i];
+          assert(j < _neighborTags.size());
+          for (size_t k = 0; k < _neighCount; ++k) { buf[m++] = ubuf(_neighborTags[j][k]).d; }
         }
         break;
       case CLUSTER:
@@ -1247,18 +1251,30 @@ namespace FIXDXA_NS {
   void FixDXA::unpack_forward_comm(int n, int first, double *buf)
   {
     int m = 0;
+    assert(first >= atom->nlocal);
     switch (_commStep) {
       case STRUCTURE:
-        _structureType.resize(first + n);
         for (int i = first, last = first + n; i < last; ++i) {
           assert(i < _structureType.size());
           _structureType[i] = static_cast<StructureType>(ubuf(buf[m++]).i);
-          auto s = _structureType[i];
+        }
+        break;
+      case STRUCTURE_NEIGHS:
+        for (int i = first, last = first + n; i < last; ++i) {
+          assert(i < _structureType.size());
+          _structureType[i] = static_cast<StructureType>(ubuf(buf[m++]).i);
+        }
+        // TODO add offset of atoms->nlocal
+        _neighborTags.resize(first + n);
+        for (int i = first, last = first + n; i < last; ++i) {
+          assert(i < _neighborTags.size());
+          for (size_t j = 0; j < _neighCount; ++j) {
+            assert(_neighborTags[i][j] == 0);
+            _neighborTags[i][j] = static_cast<tagint>(ubuf(buf[m++]).i);
+          }
         }
         break;
       case CLUSTER:
-        _atomClusterType.resize(first + n);
-        _atomSymmetryPermutations.resize(first + n);
         for (int i = first, last = first + n; i < last; ++i) {
           assert(i < _atomClusterType.size());
           assert(i < _atomSymmetryPermutations.size());

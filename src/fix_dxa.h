@@ -147,7 +147,7 @@ namespace FIXDXA_NS {
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   enum StructureType : int { BCC = 0, CUBIC_DIA, FCC, HCP, HEX_DIA, OTHER, MAXSTRUCTURECOUNT };
   enum ClusterStatus : tagint { INVALID = -1 };
-  enum CommSteps { STRUCTURE, CLUSTER, NOCOM };
+  enum CommSteps { STRUCTURE, STRUCTURE_NEIGHS, CLUSTER, NOCOM };
 
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   // SYMMETRYPERMUTATION
@@ -302,6 +302,12 @@ namespace FIXDXA_NS {
     const unsigned char VERSION = 1;
 
    private:
+    void initialize_neighborIndices(size_t);
+    void pack_neighborIndices_forward_comm();
+    void unpack_neighborIndices_forward_comm();
+
+    bool addNeighborIndex(int, int);
+
     bool getCNANeighbors(std::vector<CNANeighbor> &, const int, const int) const;
 
     void identifyCrystalStructure();
@@ -324,7 +330,6 @@ namespace FIXDXA_NS {
 
     int me;
 
-    int comm_forward = 2;
     CommSteps _commStep = NOCOM;
 
     // std::vector<tagint> _nnListIdx;
@@ -332,6 +337,8 @@ namespace FIXDXA_NS {
     std::vector<std::pair<int, double>> _nnListBuffer;
 
     std::vector<std::array<tagint, _maxNeighCount>> _neighborIndices;
+    decltype(_neighborIndices) _neighborTags;
+
     std::vector<StructureType> _structureType;
     std::vector<int> _atomSymmetryPermutations;
     std::vector<tagint> _atomClusterType;
