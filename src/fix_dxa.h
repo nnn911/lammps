@@ -302,19 +302,16 @@ namespace FIXDXA_NS {
     const unsigned char VERSION = 1;
 
    private:
+    // Structure Identification
     void initialize_neighborIndices(size_t);
     void pack_neighborIndices_forward_comm();
     void unpack_neighborIndices_forward_comm();
 
     bool addNeighborIndex(int, int);
-
     bool getCNANeighbors(std::vector<CNANeighbor> &, const int, const int) const;
-
     void identifyCrystalStructure();
-
     void initializeStructures();
 
-    // void buildNNList();
     void buildNNList(int, int);
     void buildClusters();
     void connectClusters();
@@ -322,6 +319,10 @@ namespace FIXDXA_NS {
     double getSqNeighDistance(int, int);
 
     void write_cluster_transitions() const;
+    void write_cluster_transitions_parallel() const;
+
+    // Tessllation
+    bool firstTessllation();
 
     static constexpr size_t _maxNeighCount = 16;
     static constexpr size_t _minNarg = 5;

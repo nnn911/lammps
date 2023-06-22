@@ -13,6 +13,7 @@
 #include "comm.h"
 #include "domain.h"
 #include "error.h"
+#include "fix_dxa_delaunay.h"
 #include "memory.h"
 #include "neigh_list.h"
 #include "neighbor.h"
@@ -22,8 +23,8 @@
 #include <numeric>
 #include <string>
 
-// !TODO! remove
-#include <unistd.h>
+// todo remove
+#include <fmt/ranges.h>
 
 namespace LAMMPS_NS {
 namespace FIXDXA_NS {
@@ -124,17 +125,22 @@ namespace FIXDXA_NS {
 
   void FixDXA::end_of_step()
   {
+    // Structure Identification
     identifyCrystalStructure();
     buildClusters();
-    assert(_atomClusterType.size() >= atom->nlocal);
-    assert(_structureType.size() >= atom->nlocal);
     for (int i = 0; i < atom->nlocal; ++i) {
       _output[i][0] = static_cast<double>(static_cast<int>(_structureType[i]));
       _output[i][1] = static_cast<double>(_atomClusterType[i]);
     }
     array_atom = _output;
     connectClusters();
+#ifndef NDEBUG
     write_cluster_transitions();
+#endif
+    write_cluster_transitions_parallel();
+
+    // Tessellation
+    // firstTessllation();
   }
 
   void FixDXA::init()
@@ -1160,6 +1166,48 @@ namespace FIXDXA_NS {
     utils::logmesg(lmp, "End of write_cluster_transitions() on rank {}\n", me);
   }
 
+  void FixDXA::write_cluster_transitions_parallel() const
+  {
+    utils::logmesg(lmp, "Start of write_cluster_transitions_parallel() on rank {}\n", me);
+
+    int nprocs;
+    MPI_Comm_size(world, &nprocs);
+
+    const int sbuf = _clusterGraph.clusterTransitions.size();
+    std::vector<int> rbuf;
+    rbuf.resize(nprocs);
+    MPI_Allgather(&sbuf, 1, MPI_INT, rbuf.data(), 1, MPI_INT, world);
+
+    const std::string fname = fmt::format("cluster_transition.bin.data", me);
+    MPI_File outFile;
+    MPI_File_open(world, fname.c_str(), MPI_MODE_WRONLY, MPI_INFO_NULL, &outFile);
+
+    const size_t headerSize = (me == 0) ? 0 : 1;
+    const size_t entryCount = std::accumulate(rbuf.begin(), rbuf.begin() + me, (size_t) 0);
+    const size_t entriesPerTransition = 2 + 9;
+    const MPI_Offset offset = (headerSize + entryCount * entriesPerTransition) * sizeof(double);
+    MPI_File_set_view(outFile, offset, MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
+
+    std::vector<double> outbuf;
+    if (me == 0) {
+      outbuf.reserve(entriesPerTransition * _clusterGraph.clusterTransitions.size() + 1);
+      int total_transition_count = std::accumulate(rbuf.begin(), rbuf.end(), (int) 0);
+      outbuf.push_back(ubuf(total_transition_count).d);
+    } else {
+      outbuf.reserve(entriesPerTransition * _clusterGraph.clusterTransitions.size());
+    }
+    for (const auto &t : _clusterGraph.clusterTransitions) {
+      outbuf.push_back(ubuf(t.cluster1).d);
+      outbuf.push_back(ubuf(t.cluster2).d);
+      for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) { outbuf.push_back(t.transition.column(i)[j]); }
+      }
+    }
+    MPI_File_write_all(outFile, outbuf.data(), outbuf.size(), MPI_DOUBLE, MPI_STATUS_IGNORE);
+    MPI_File_close(&outFile);
+    utils::logmesg(lmp, "End of write_cluster_transitions_parallel() on rank {}\n", me);
+  }
+
   /*++++++++++++++++++++++++++++++++
     _____
    /  __ \                          
@@ -1303,5 +1351,45 @@ namespace FIXDXA_NS {
         break;
     }
   }
+
+  /*++++++++++++++++++++++++++++++++++++++++++++++++++++
+   _____                  _ _       _   _             
+  |_   _|                | | |     | | (_)            
+    | | ___  ___ ___  ___| | | __ _| |_ _  ___  _ __  
+    | |/ _ \/ __/ __|/ _ \ | |/ _` | __| |/ _ \| '_ \ 
+    | |  __/\__ \__ \  __/ | | (_| | |_| | (_) | | | |
+    \_/\___||___/___/\___|_|_|\__,_|\__|_|\___/|_| |_|
+++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
+
+  // void FixDXA::write_tessellation() const
+  // {
+  //   utils::logmesg(lmp, "Start of write_cluster_transitions() on rank {}\n", me);
+
+  //   const std::string fname = fmt::format("cluster_transition_rank_{}.data", me);
+  //   std::ofstream outFile(fname);
+  //   if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
+  //   outFile << _clusterGraph.clusterTransitions.size() << '\n';
+  //   for (const auto &t : _clusterGraph.clusterTransitions) {
+  //     outFile << fmt::format(
+  //         "{} {} {} {} {} {} {} {} {} {} {}\n", t.cluster1, t.cluster2, t.transition.column(0)[0],
+  //         t.transition.column(1)[0], t.transition.column(2)[0], t.transition.column(0)[1],
+  //         t.transition.column(1)[1], t.transition.column(2)[1], t.transition.column(0)[2],
+  //         t.transition.column(1)[2], t.transition.column(2)[2]);
+  //   }
+  //   utils::logmesg(lmp, "End of write_cluster_transitions() on rank {}\n", me);
+  // }
+
+  bool FixDXA::firstTessllation()
+  {
+    utils::logmesg(lmp, "Start of firstTessllation() on rank {}\n", me);
+
+    Delaunay dt = Delaunay(atom->nlocal, atom->nghost, &(atom->x)[0][0]);
+
+    // for (size_t cell = 0; cell < dt.numFiniteCells(); cell) {}
+    utils::logmesg(lmp, "End of firstTessllation() on rank {}\n", me);
+
+    return true;
+  }
+
 }    // namespace FIXDXA_NS
 }    // namespace LAMMPS_NS
