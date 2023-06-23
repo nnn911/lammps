@@ -17,7 +17,9 @@ FixStyle(dxa,FIXDXA_NS::FixDXA);
 #define LMP_FIX_DXA_H
 
 #include "fix.h"
+#include "fix_dxa_delaunay.h"
 #include "fix_dxa_math.h"
+#include <memory>
 
 namespace LAMMPS_NS {
 namespace FIXDXA_NS {
@@ -147,7 +149,7 @@ namespace FIXDXA_NS {
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   enum StructureType : int { BCC = 0, CUBIC_DIA, FCC, HCP, HEX_DIA, OTHER, MAXSTRUCTURECOUNT };
   enum ClusterStatus : tagint { INVALID = -1 };
-  enum CommSteps { STRUCTURE, STRUCTURE_NEIGHS, CLUSTER, NOCOM };
+  enum CommSteps { STRUCTURE, STRUCTURE_NEIGHS, CLUSTER, DISPLACEMENT, NOCOM };
 
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   // SYMMETRYPERMUTATION
@@ -323,7 +325,9 @@ namespace FIXDXA_NS {
 
     // Tessllation
     bool firstTessllation();
+    void write_tessellation_parallel() const;
 
+   private:
     static constexpr size_t _maxNeighCount = 16;
     static constexpr size_t _minNarg = 5;
     const StructureType _inputStructure;
@@ -344,6 +348,11 @@ namespace FIXDXA_NS {
     std::vector<int> _atomSymmetryPermutations;
     std::vector<tagint> _atomClusterType;
     ClusterGraph _clusterGraph;
+
+    std::vector<Vector3d> _displacedAtoms;
+
+    // std::unique_ptr<Delaunay> _dt = nullptr;
+    Delaunay _dt;
 
     double **_output = nullptr;
     const std::string _outputName = "dxa:Output";

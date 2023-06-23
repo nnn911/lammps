@@ -13,10 +13,10 @@
 #include "comm.h"
 #include "domain.h"
 #include "error.h"
-#include "fix_dxa_delaunay.h"
 #include "memory.h"
 #include "neigh_list.h"
 #include "neighbor.h"
+#include "random_park.h"
 #include "utils.h"
 #include <deque>
 #include <fstream>
@@ -140,7 +140,8 @@ namespace FIXDXA_NS {
     write_cluster_transitions_parallel();
 
     // Tessellation
-    // firstTessllation();
+    firstTessllation();
+    write_tessellation_parallel();
   }
 
   void FixDXA::init()
@@ -1180,7 +1181,7 @@ namespace FIXDXA_NS {
 
     const std::string fname = fmt::format("cluster_transition.bin.data", me);
     MPI_File outFile;
-    MPI_File_open(world, fname.c_str(), MPI_MODE_WRONLY, MPI_INFO_NULL, &outFile);
+    MPI_File_open(world, fname.c_str(), MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &outFile);
 
     const size_t headerSize = (me == 0) ? 0 : 1;
     const size_t entryCount = std::accumulate(rbuf.begin(), rbuf.begin() + me, (size_t) 0);
@@ -1191,8 +1192,8 @@ namespace FIXDXA_NS {
     std::vector<double> outbuf;
     if (me == 0) {
       outbuf.reserve(entriesPerTransition * _clusterGraph.clusterTransitions.size() + 1);
-      int total_transition_count = std::accumulate(rbuf.begin(), rbuf.end(), (int) 0);
-      outbuf.push_back(ubuf(total_transition_count).d);
+      int totalTransitionCount = std::accumulate(rbuf.begin(), rbuf.end(), (int) 0);
+      outbuf.push_back(ubuf(totalTransitionCount).d);
     } else {
       outbuf.reserve(entriesPerTransition * _clusterGraph.clusterTransitions.size());
     }
@@ -1305,11 +1306,20 @@ namespace FIXDXA_NS {
           buf[m++] = ubuf(_atomSymmetryPermutations[j]).d;
         }
         break;
+      case DISPLACEMENT:
+        for (int i = 0; i < n; ++i) {
+          j = list[i];
+          assert(j < _displacedAtoms.size());
+          buf[m++] = _displacedAtoms[j][0];
+          buf[m++] = _displacedAtoms[j][1];
+          buf[m++] = _displacedAtoms[j][2];
+        }
+        break;
       default:
         unreachable(lmp);
+        break;
         return 0;
     }
-
     return m;
   }
   void FixDXA::unpack_forward_comm(int n, int first, double *buf)
@@ -1346,6 +1356,14 @@ namespace FIXDXA_NS {
           _atomSymmetryPermutations[i] = ubuf(buf[m++]).i;
         }
         break;
+      case DISPLACEMENT:
+        for (int i = first, last = first + n; i < last; ++i) {
+          assert(i < _displacedAtoms.size());
+          _displacedAtoms[i][0] = buf[m++];
+          _displacedAtoms[i][1] = buf[m++];
+          _displacedAtoms[i][2] = buf[m++];
+        }
+        break;
       default:
         unreachable(lmp);
         break;
@@ -1361,31 +1379,79 @@ namespace FIXDXA_NS {
     \_/\___||___/___/\___|_|_|\__,_|\__|_|\___/|_| |_|
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 
-  // void FixDXA::write_tessellation() const
-  // {
-  //   utils::logmesg(lmp, "Start of write_cluster_transitions() on rank {}\n", me);
+  void FixDXA::write_tessellation_parallel() const
+  {
+    utils::logmesg(lmp, "Start of write_tessellation_parallel() on rank {}\n", me);
 
-  //   const std::string fname = fmt::format("cluster_transition_rank_{}.data", me);
-  //   std::ofstream outFile(fname);
-  //   if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
-  //   outFile << _clusterGraph.clusterTransitions.size() << '\n';
-  //   for (const auto &t : _clusterGraph.clusterTransitions) {
-  //     outFile << fmt::format(
-  //         "{} {} {} {} {} {} {} {} {} {} {}\n", t.cluster1, t.cluster2, t.transition.column(0)[0],
-  //         t.transition.column(1)[0], t.transition.column(2)[0], t.transition.column(0)[1],
-  //         t.transition.column(1)[1], t.transition.column(2)[1], t.transition.column(0)[2],
-  //         t.transition.column(1)[2], t.transition.column(2)[2]);
-  //   }
-  //   utils::logmesg(lmp, "End of write_cluster_transitions() on rank {}\n", me);
-  // }
+    int nprocs;
+    MPI_Comm_size(world, &nprocs);
+
+    assert(_dt.isValid());
+    const int sbuf = (int) _dt.numOwnedFacets();
+    std::vector<int> rbuf;
+    rbuf.resize(nprocs);
+    MPI_Allgather(&sbuf, 1, MPI_INT, rbuf.data(), 1, MPI_INT, world);
+
+    const std::string fname = fmt::format("facets.bin.data", me);
+    MPI_File outFile;
+    MPI_File_open(world, fname.c_str(), MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &outFile);
+
+    const size_t headerSize = (me == 0) ? 0 : 1;
+    const size_t entryCount = std::accumulate(rbuf.begin(), rbuf.begin() + me, (size_t) 0);
+    const size_t entriesPerTransition = 4;
+    const MPI_Offset offset = (headerSize + entryCount * entriesPerTransition) * sizeof(double);
+    MPI_File_set_view(outFile, offset, MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
+
+    std::vector<double> outbuf;
+    if (me == 0) {
+      outbuf.reserve(entriesPerTransition * _dt.numOwnedFacets() + 1);
+      int totalFacetCount = std::accumulate(rbuf.begin(), rbuf.end(), (int) 0);
+      outbuf.push_back(ubuf(totalFacetCount).d);
+    } else {
+      outbuf.reserve(entriesPerTransition * _dt.numOwnedFacets());
+    }
+
+    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+      // if (!_dt.cellIsOwned(cell)) { continue; }
+      for (size_t facet = 0; facet < 4; ++facet) {
+        if (!_dt.facetIsOwned(cell, facet)) { continue; }
+        outbuf.push_back(ubuf((tagint) cell).d);
+        outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 0)]).d);
+        outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 1)]).d);
+        outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 2)]).d);
+      }
+    }
+    MPI_File_write_all(outFile, outbuf.data(), outbuf.size(), MPI_DOUBLE, MPI_STATUS_IGNORE);
+    MPI_File_close(&outFile);
+
+    utils::logmesg(lmp, "End of write_tessellation_parallel() on rank {}\n", me);
+  }
 
   bool FixDXA::firstTessllation()
   {
     utils::logmesg(lmp, "Start of firstTessllation() on rank {}\n", me);
+    size_t ntotal = atom->nlocal + atom->nghost;
+    _displacedAtoms.resize(ntotal);
+    auto rng = std::unique_ptr<RanPark>(new RanPark(lmp, 1323 + me));
+    for (size_t i = 0; i < 50; ++i) { rng->uniform(); };
+    for (size_t i = 0; i < ntotal; ++i) {
+      _displacedAtoms[i][0] = 1e-9 * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][1] = 1e-9 * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][2] = 1e-9 * (2 * rng->uniform() - 1);
+    }
 
-    Delaunay dt = Delaunay(atom->nlocal, atom->nghost, &(atom->x)[0][0]);
+    _commStep = DISPLACEMENT;
+    comm->forward_comm(this, 3);
+    _commStep = NOCOM;
 
-    // for (size_t cell = 0; cell < dt.numFiniteCells(); cell) {}
+    for (size_t i = 0; i < ntotal; ++i) {
+      _displacedAtoms[i][0] += atom->x[i][0];
+      _displacedAtoms[i][1] += atom->x[i][1];
+      _displacedAtoms[i][2] += atom->x[i][2];
+    }
+
+    _dt.generateTessellation(atom->nlocal, atom->nghost, _displacedAtoms[0].data());
+
     utils::logmesg(lmp, "End of firstTessllation() on rank {}\n", me);
 
     return true;

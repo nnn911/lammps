@@ -60,7 +60,12 @@ namespace FIXDXA_NS {
     {
       return Vector3(x() + v.x(), y() + v.y(), z() + v.z());
     }
-    friend Vector3 operator*(double d, const Vector3 &v)
+    constexpr Vector3 operator+(const T d) const { return Vector3(x() + d, y() + d, z() + d); }
+    friend Vector3 operator+(T d, const Vector3 &v)
+    {
+      return Vector3(d + v[0], d + v[1], d + v[2]);
+    }
+    friend Vector3 operator*(T d, const Vector3 &v)
     {
       return Vector3(d * v[0], d * v[1], d * v[2]);
     }
