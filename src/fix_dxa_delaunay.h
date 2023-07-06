@@ -44,15 +44,7 @@ namespace FIXDXA_NS {
 
       _dt->set_vertices(_nlocal + _nghost, points);
 
-      // Todo consider if this is needed
       bool isOwned;
-      _cellOwnership.resize(numCells());
-      for (size_t cell = 0; cell < numCells(); ++cell) {
-        isOwned = _cellIsOwned(cell);
-        _cellOwnership[cell] = isOwned;
-        _numOwnedCells += isOwned;
-      }
-
       _facetOwnership.resize(4 * numCells());
       size_t idx = 0;
       for (size_t cell = 0; cell < numCells(); ++cell) {
@@ -62,6 +54,15 @@ namespace FIXDXA_NS {
           _numOwnedFacets += isOwned;
         }
       }
+
+      // Todo consider if this is needed
+      _cellOwnership.resize(numCells());
+      for (size_t cell = 0; cell < numCells(); ++cell) {
+        isOwned = _cellIsOwned(cell);
+        _cellOwnership[cell] = isOwned;
+        _numOwnedCells += isOwned;
+      }
+
       _isValid = true;
     }
 
@@ -89,6 +90,11 @@ namespace FIXDXA_NS {
       // x -> coord == 0, y -> coord == 1, z -> coord == 2
       return *(_dt->vertex_ptr(gVertexIndex) + coord);
     }
+    Vector3d getVertexPos(size_t gVertexIndex) const
+    {
+      return {*(_dt->vertex_ptr(gVertexIndex)), *(_dt->vertex_ptr(gVertexIndex) + 1),
+              *(_dt->vertex_ptr(gVertexIndex) + 2)};
+    }
 
     bool cellIsFinite(size_t cell) const { return _dt->cell_is_finite(cell); }
     bool cellIsOwned(size_t cell) const { return _cellOwnership[cell]; }
@@ -99,6 +105,8 @@ namespace FIXDXA_NS {
    private:
     bool _facetIsOwned(size_t cell, size_t facet) const
     {
+      // a facet is owned if two of its vertices are owned (local atoms)
+      // facets can only be owned by one processor
       size_t localVerts = 0;
       for (size_t vert = 0; vert < 3; ++vert) {
         int cellVert = cellVertex(cell, facetLocalVertex(facet, vert));
@@ -109,28 +117,38 @@ namespace FIXDXA_NS {
 
     bool _cellIsOwned(size_t cell) const
     {
-      size_t localVerts = 0;
-      for (size_t lv = 0; lv < 4; ++lv) {
-        size_t cellVert = _dt->cell_vertex(cell, lv);
-        localVerts += cellVert < _nlocal;
+      // cell is owned if one or more of its facets are owned
+      // cells can be owned by multiple processors
+      // facets can only be owned by one processor
+      for (size_t facet = 0; facet < 4; ++facet) {
+        if (facetIsOwned(cell, facet)) { return true; }
       }
-      // The current processor is owner of the cell if the majority of vertices are local vertices.
-      if (localVerts > 2) { return true; }
-      if (localVerts < 2) { return false; }
-      // In the case of a tie (2 local, 2 ghost) the vertex with the smallest x-coordinate is used as a tie breaker.
-      double minC = std::numeric_limits<double>::max();
-      size_t minIdx = 0;
-      for (size_t lv = 0; lv < 4; ++lv) {
-        size_t cellVert = _dt->cell_vertex(cell, lv);
-        double pos = getVertexPos(cellVert, 0);
-        if (pos < minC) {
-          minC = pos;
-          minIdx = cellVert;
-        }
-      }
-      if (minIdx < _nlocal) { return true; }
       return false;
     }
+    // bool _cellIsOwned(size_t cell) const
+    // {
+    //   size_t localVerts = 0;
+    //   for (size_t lv = 0; lv < 4; ++lv) {
+    //     size_t cellVert = _dt->cell_vertex(cell, lv);
+    //     localVerts += cellVert < _nlocal;
+    //   }
+    //   // The current processor is owner of the cell if the majority of vertices are local vertices.
+    //   if (localVerts > 2) { return true; }
+    //   if (localVerts < 2) { return false; }
+    //   // In the case of a tie (2 local, 2 ghost) the vertex with the smallest x-coordinate is used as a tie breaker.
+    //   double minC = std::numeric_limits<double>::max();
+    //   size_t minIdx = 0;
+    //   for (size_t lv = 0; lv < 4; ++lv) {
+    //     size_t cellVert = _dt->cell_vertex(cell, lv);
+    //     double pos = getVertexPos(cellVert, 0);
+    //     if (pos < minC) {
+    //       minC = pos;
+    //       minIdx = cellVert;
+    //     }
+    //   }
+    //   if (minIdx < _nlocal) { return true; }
+    //   return false;
+    // }
 
    private:
     bool _init = false;

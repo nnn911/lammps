@@ -325,6 +325,7 @@ namespace FIXDXA_NS {
 
     // Tessllation
     bool firstTessllation();
+    bool validateTessllation() const;
     void write_tessellation_parallel() const;
 
    private:

@@ -1411,11 +1411,43 @@ namespace FIXDXA_NS {
       outbuf.reserve(entriesPerTransition * _dt.numOwnedFacets());
     }
 
-    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+    for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
       // if (!_dt.cellIsOwned(cell)) { continue; }
       for (size_t facet = 0; facet < 4; ++facet) {
         if (!_dt.facetIsOwned(cell, facet)) { continue; }
-        outbuf.push_back(ubuf((tagint) cell).d);
+        auto i1 = _dt.facetVertex(cell, facet, 0);
+        auto i2 = _dt.facetVertex(cell, facet, 1);
+        auto i3 = _dt.facetVertex(cell, facet, 2);
+        auto c1 = atom->tag[_dt.facetVertex(cell, facet, 0)];
+        auto c2 = atom->tag[_dt.facetVertex(cell, facet, 1)];
+        auto c3 = atom->tag[_dt.facetVertex(cell, facet, 2)];
+        if ((i1 == i2) || (i1 == i3) || (i2 == i3)) {
+          auto x = 10;
+          ;
+        }
+        if ((c1 == c2) || (c1 == c3) || (c2 == c3)) {
+          auto x = 10;
+          ;
+        }
+        // assert(std::abs(atom->x[_dt.facetVertex(cell, facet, 2)][0] -
+        //                 _dt.getVertexPos(_dt.facetVertex(cell, facet, 2))[0]) < 1e-4);
+        // assert(std::abs(atom->x[_dt.facetVertex(cell, facet, 2)][1] -
+        //                 _dt.getVertexPos(_dt.facetVertex(cell, facet, 2))[1]) < 1e-4);
+        // assert(std::abs(atom->x[_dt.facetVertex(cell, facet, 2)][2] -
+        //                 _dt.getVertexPos(_dt.facetVertex(cell, facet, 2))[2]) < 1e-4);
+        // if ((c1 == 170 || c1 == 176 || c1 == 174) && (c2 == 170 || c2 == 176 || c2 == 174) &&
+        //     (c3 == 170 || c3 == 176 || c3 == 174)) {
+        //   auto x = 1;
+        // }
+        // if ((c1 == 170 || c1 == 172 || c1 == 174) && (c2 == 170 || c2 == 172 || c2 == 174) &&
+        //     (c3 == 170 || c3 == 172 || c3 == 174)) {
+        //   auto x = 1;
+        // }
+        if (headerSize + entryCount + cell == 78) {
+          auto x = 1;
+          ;
+        }
+        outbuf.push_back(ubuf((tagint) (headerSize + entryCount + cell)).d);
         outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 0)]).d);
         outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 1)]).d);
         outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 2)]).d);
@@ -1427,6 +1459,108 @@ namespace FIXDXA_NS {
     utils::logmesg(lmp, "End of write_tessellation_parallel() on rank {}\n", me);
   }
 
+  // void FixDXA::write_tessellation_parallel() const
+  // {
+  //   utils::logmesg(lmp, "Start of write_tessellation_parallel() on rank {}\n", me);
+
+  //   int nprocs;
+  //   MPI_Comm_size(world, &nprocs);
+
+  //   assert(_dt.isValid());
+  //   const int sbuf = (int) _dt.numOwnedFacets();
+  //   std::vector<int> rbuf;
+  //   rbuf.resize(nprocs);
+  //   MPI_Allgather(&sbuf, 1, MPI_INT, rbuf.data(), 1, MPI_INT, world);
+
+  //   const std::string fname = fmt::format("facets.bin.data", me);
+  //   MPI_File outFile;
+  //   MPI_File_open(world, fname.c_str(), MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &outFile);
+
+  //   const size_t headerSize = (me == 0) ? 0 : 1;
+  //   const size_t entryCount = std::accumulate(rbuf.begin(), rbuf.begin() + me, (size_t) 0);
+  //   const size_t entriesPerTransition = 4;
+  //   const MPI_Offset offset = (headerSize + entryCount * entriesPerTransition) * sizeof(double);
+  //   MPI_File_set_view(outFile, offset, MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
+
+  //   std::vector<double> outbuf;
+  //   if (me == 0) {
+  //     outbuf.reserve(entriesPerTransition * _dt.numOwnedFacets() + 1);
+  //     int totalFacetCount = std::accumulate(rbuf.begin(), rbuf.end(), (int) 0);
+  //     outbuf.push_back(ubuf(totalFacetCount).d);
+  //   } else {
+  //     outbuf.reserve(entriesPerTransition * _dt.numOwnedFacets());
+  //   }
+
+  //   for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
+  //     // if (!_dt.cellIsOwned(cell)) { continue; }
+  //     for (size_t facet = 0; facet < 4; ++facet) {
+
+  //       outbuf.push_back(ubuf((tagint) (headerSize + entryCount + cell)).d);
+  //       outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 0)]).d);
+  //       outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 1)]).d);
+  //       outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 2)]).d);
+  //     }
+  //   }
+  //   MPI_File_write_all(outFile, outbuf.data(), outbuf.size(), MPI_DOUBLE, MPI_STATUS_IGNORE);
+  //   MPI_File_close(&outFile);
+
+  //   utils::logmesg(lmp, "End of write_tessellation_parallel() on rank {}\n", me);
+  // }
+
+  bool FixDXA::validateTessllation() const
+  {
+
+    // planes of bounding box
+    std::array<Plane<double>, 6> bbox;
+    // 100, -100, 010, 0-10, 001, 00-1
+    // Bounding box of local and ghost atom
+    std::array<double, 3> bboxMin{std::numeric_limits<double>::max(),
+                                  std::numeric_limits<double>::max(),
+                                  std::numeric_limits<double>::max()};
+    std::array<double, 3> bboxMax{std::numeric_limits<double>::min(),
+                                  std::numeric_limits<double>::min(),
+                                  std::numeric_limits<double>::min()};
+    for (size_t i = 0, end = atom->nlocal + atom->nghost; i < end; ++i) {
+      for (size_t j = 0; j < 3; ++j) {
+        if (atom->x[i][j] < bboxMin[j]) { bboxMin[j] = atom->x[i][j]; }
+        if (atom->x[i][j] > bboxMax[j]) { bboxMax[j] = atom->x[i][j]; }
+      }
+    }
+    bbox[0].replaceData({bboxMax[0], bboxMin[1], bboxMin[2]}, {bboxMax[0], bboxMax[1], bboxMax[2]},
+                        {bboxMax[0], bboxMin[1], bboxMax[2]});
+    bbox[1].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]}, {bboxMin[0], bboxMin[1], bboxMax[2]},
+                        {bboxMin[0], bboxMax[1], bboxMax[2]});
+    bbox[2].replaceData({bboxMax[0], bboxMax[1], bboxMin[2]}, {bboxMin[0], bboxMax[1], bboxMin[2]},
+                        {bboxMin[0], bboxMax[1], bboxMax[2]});
+    bbox[3].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]}, {bboxMax[0], bboxMin[1], bboxMin[2]},
+                        {bboxMin[0], bboxMin[1], bboxMax[2]});
+    bbox[4].replaceData({bboxMin[0], bboxMin[1], bboxMax[2]}, {bboxMax[0], bboxMin[1], bboxMax[2]},
+                        {bboxMax[0], bboxMax[1], bboxMax[2]});
+    bbox[5].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]}, {bboxMax[0], bboxMax[1], bboxMin[2]},
+                        {bboxMax[0], bboxMin[1], bboxMin[2]});
+    std::array<Vector3d, 4> cellVerts;
+    for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
+      if (!_dt.cellIsOwned(cell)) { continue; }
+      for (size_t vert = 0; vert < 4; ++vert) {
+        int idx = _dt.cellVertex(cell, vert);
+        cellVerts[vert] = _dt.getVertexPos(idx);
+        assert(almostEqual(cellVerts[vert][0], _displacedAtoms[idx][0]));
+        assert(almostEqual(cellVerts[vert][1], _displacedAtoms[idx][1]));
+        assert(almostEqual(cellVerts[vert][2], _displacedAtoms[idx][2]));
+      }
+      Sphere<double> s{cellVerts[0], cellVerts[1], cellVerts[2], cellVerts[3]};
+      assert(s.valid());
+      for (const auto &b : bbox) {
+        double distance = b.getSignedPointDistance(s.origin());
+        if (distance > 0 || std::abs(distance) <= s.radius()) {
+          lmp->error->all(FLERR, "Delaunay tessellation not correct!\n");
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   bool FixDXA::firstTessllation()
   {
     utils::logmesg(lmp, "Start of firstTessllation() on rank {}\n", me);
@@ -1434,10 +1568,10 @@ namespace FIXDXA_NS {
     _displacedAtoms.resize(ntotal);
     auto rng = std::unique_ptr<RanPark>(new RanPark(lmp, 1323 + me));
     for (size_t i = 0; i < 50; ++i) { rng->uniform(); };
-    for (size_t i = 0; i < ntotal; ++i) {
-      _displacedAtoms[i][0] = 1e-9 * (2 * rng->uniform() - 1);
-      _displacedAtoms[i][1] = 1e-9 * (2 * rng->uniform() - 1);
-      _displacedAtoms[i][2] = 1e-9 * (2 * rng->uniform() - 1);
+    for (size_t i = 0; i < atom->nlocal; ++i) {
+      _displacedAtoms[i][0] = 1e-6 * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][1] = 1e-6 * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][2] = 1e-6 * (2 * rng->uniform() - 1);
     }
 
     _commStep = DISPLACEMENT;
@@ -1450,7 +1584,9 @@ namespace FIXDXA_NS {
       _displacedAtoms[i][2] += atom->x[i][2];
     }
 
-    _dt.generateTessellation(atom->nlocal, atom->nghost, _displacedAtoms[0].data());
+    _dt.generateTessellation(atom->nlocal, atom->nghost, &_displacedAtoms[0][0]);
+
+    // validateTessllation();
 
     utils::logmesg(lmp, "End of firstTessllation() on rank {}\n", me);
 
