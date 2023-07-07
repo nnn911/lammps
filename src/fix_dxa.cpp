@@ -142,6 +142,7 @@ namespace FIXDXA_NS {
     // Tessellation
     firstTessllation();
     write_tessellation_parallel();
+    write_per_rank_tessellation_();
   }
 
   void FixDXA::init()
@@ -1412,41 +1413,8 @@ namespace FIXDXA_NS {
     }
 
     for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
-      // if (!_dt.cellIsOwned(cell)) { continue; }
       for (size_t facet = 0; facet < 4; ++facet) {
         if (!_dt.facetIsOwned(cell, facet)) { continue; }
-        auto i1 = _dt.facetVertex(cell, facet, 0);
-        auto i2 = _dt.facetVertex(cell, facet, 1);
-        auto i3 = _dt.facetVertex(cell, facet, 2);
-        auto c1 = atom->tag[_dt.facetVertex(cell, facet, 0)];
-        auto c2 = atom->tag[_dt.facetVertex(cell, facet, 1)];
-        auto c3 = atom->tag[_dt.facetVertex(cell, facet, 2)];
-        if ((i1 == i2) || (i1 == i3) || (i2 == i3)) {
-          auto x = 10;
-          ;
-        }
-        if ((c1 == c2) || (c1 == c3) || (c2 == c3)) {
-          auto x = 10;
-          ;
-        }
-        // assert(std::abs(atom->x[_dt.facetVertex(cell, facet, 2)][0] -
-        //                 _dt.getVertexPos(_dt.facetVertex(cell, facet, 2))[0]) < 1e-4);
-        // assert(std::abs(atom->x[_dt.facetVertex(cell, facet, 2)][1] -
-        //                 _dt.getVertexPos(_dt.facetVertex(cell, facet, 2))[1]) < 1e-4);
-        // assert(std::abs(atom->x[_dt.facetVertex(cell, facet, 2)][2] -
-        //                 _dt.getVertexPos(_dt.facetVertex(cell, facet, 2))[2]) < 1e-4);
-        // if ((c1 == 170 || c1 == 176 || c1 == 174) && (c2 == 170 || c2 == 176 || c2 == 174) &&
-        //     (c3 == 170 || c3 == 176 || c3 == 174)) {
-        //   auto x = 1;
-        // }
-        // if ((c1 == 170 || c1 == 172 || c1 == 174) && (c2 == 170 || c2 == 172 || c2 == 174) &&
-        //     (c3 == 170 || c3 == 172 || c3 == 174)) {
-        //   auto x = 1;
-        // }
-        if (headerSize + entryCount + cell == 78) {
-          auto x = 1;
-          ;
-        }
         outbuf.push_back(ubuf((tagint) (headerSize + entryCount + cell)).d);
         outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 0)]).d);
         outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 1)]).d);
@@ -1459,53 +1427,29 @@ namespace FIXDXA_NS {
     utils::logmesg(lmp, "End of write_tessellation_parallel() on rank {}\n", me);
   }
 
-  // void FixDXA::write_tessellation_parallel() const
-  // {
-  //   utils::logmesg(lmp, "Start of write_tessellation_parallel() on rank {}\n", me);
+  void FixDXA::write_per_rank_tessellation_() const
+  {
+    utils::logmesg(lmp, "Start of write_tessellation() on rank {}\n", me);
 
-  //   int nprocs;
-  //   MPI_Comm_size(world, &nprocs);
+    const std::string fname = fmt::format("tessellation_on_rank_{}.xyz", me);
+    std::ofstream outFile(fname);
+    if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
+    outFile << "DXA debug topology file\n" << atom->nlocal + atom->nghost << '\n';
+    for (size_t i = 0; i < atom->nlocal + atom->nghost; ++i) {
+      outFile << fmt::format("{} {} {} {} {}\n", atom->tag[i], (i < atom->nlocal) ? 1 : 2,
+                             atom->x[i][0], atom->x[i][1], atom->x[i][2]);
+    }
+    outFile << _dt.numOwnedFacets() << '\n';
+    for (size_t i = 0; i < _dt.numFiniteCells(); ++i) {
+      for (size_t j = 0; j < 4; ++j) {
+        if (!_dt.facetIsOwned(i, j)) { continue; }
+        outFile << fmt::format("{} {} {}\n", _dt.facetVertex(i, j, 0), _dt.facetVertex(i, j, 1),
+                               _dt.facetVertex(i, j, 2));
+      }
+    }
 
-  //   assert(_dt.isValid());
-  //   const int sbuf = (int) _dt.numOwnedFacets();
-  //   std::vector<int> rbuf;
-  //   rbuf.resize(nprocs);
-  //   MPI_Allgather(&sbuf, 1, MPI_INT, rbuf.data(), 1, MPI_INT, world);
-
-  //   const std::string fname = fmt::format("facets.bin.data", me);
-  //   MPI_File outFile;
-  //   MPI_File_open(world, fname.c_str(), MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &outFile);
-
-  //   const size_t headerSize = (me == 0) ? 0 : 1;
-  //   const size_t entryCount = std::accumulate(rbuf.begin(), rbuf.begin() + me, (size_t) 0);
-  //   const size_t entriesPerTransition = 4;
-  //   const MPI_Offset offset = (headerSize + entryCount * entriesPerTransition) * sizeof(double);
-  //   MPI_File_set_view(outFile, offset, MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
-
-  //   std::vector<double> outbuf;
-  //   if (me == 0) {
-  //     outbuf.reserve(entriesPerTransition * _dt.numOwnedFacets() + 1);
-  //     int totalFacetCount = std::accumulate(rbuf.begin(), rbuf.end(), (int) 0);
-  //     outbuf.push_back(ubuf(totalFacetCount).d);
-  //   } else {
-  //     outbuf.reserve(entriesPerTransition * _dt.numOwnedFacets());
-  //   }
-
-  //   for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
-  //     // if (!_dt.cellIsOwned(cell)) { continue; }
-  //     for (size_t facet = 0; facet < 4; ++facet) {
-
-  //       outbuf.push_back(ubuf((tagint) (headerSize + entryCount + cell)).d);
-  //       outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 0)]).d);
-  //       outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 1)]).d);
-  //       outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 2)]).d);
-  //     }
-  //   }
-  //   MPI_File_write_all(outFile, outbuf.data(), outbuf.size(), MPI_DOUBLE, MPI_STATUS_IGNORE);
-  //   MPI_File_close(&outFile);
-
-  //   utils::logmesg(lmp, "End of write_tessellation_parallel() on rank {}\n", me);
-  // }
+    utils::logmesg(lmp, "End of write_tessellation() on rank {}\n", me);
+  }
 
   bool FixDXA::validateTessllation() const
   {
@@ -1584,7 +1528,7 @@ namespace FIXDXA_NS {
       _displacedAtoms[i][2] += atom->x[i][2];
     }
 
-    _dt.generateTessellation(atom->nlocal, atom->nghost, &_displacedAtoms[0][0]);
+    _dt.generateTessellation(atom->nlocal, atom->nghost, &_displacedAtoms[0][0], atom->tag);
 
     // validateTessllation();
 

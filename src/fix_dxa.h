@@ -327,6 +327,7 @@ namespace FIXDXA_NS {
     bool firstTessllation();
     bool validateTessllation() const;
     void write_tessellation_parallel() const;
+    void write_per_rank_tessellation_() const;
 
    private:
     static constexpr size_t _maxNeighCount = 16;

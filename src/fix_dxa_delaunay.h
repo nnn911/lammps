@@ -13,6 +13,7 @@
 
 #include "fix_dxa_Delaunay_psm.h"
 #include "fix_dxa_math.h"
+#include "lmptype.h"
 #include <limits>
 
 namespace LAMMPS_NS {
@@ -33,10 +34,12 @@ namespace FIXDXA_NS {
       _dt->set_reorder(true);
       _init = true;
     }
-    void generateTessellation(size_t nlocal, size_t nghost, const double *const points)
+    void generateTessellation(size_t nlocal, size_t nghost, const double *const points,
+                              const tagint *const tags)
     {
       _nlocal = nlocal;
       _nghost = nghost;
+      _tags = tags;
 
       if (!_init) { init(); }
       std::srand(1323);
@@ -108,11 +111,19 @@ namespace FIXDXA_NS {
       // a facet is owned if two of its vertices are owned (local atoms)
       // facets can only be owned by one processor
       size_t localVerts = 0;
+
+      tagint minVert = std::numeric_limits<tagint>::max();
+      bool minVertOwned = false;
       for (size_t vert = 0; vert < 3; ++vert) {
         int cellVert = cellVertex(cell, facetLocalVertex(facet, vert));
-        localVerts += cellVert < _nlocal;
+        if (_tags[cellVert] < minVert) {
+          minVert = _tags[cellVert];
+          minVertOwned = cellVert < _nlocal;
+        }
+        // localVerts += cellVert < _nlocal;
       }
-      return localVerts >= 2;
+      return minVertOwned;
+      // return localVerts >= 2;
     }
 
     bool _cellIsOwned(size_t cell) const
@@ -157,10 +168,11 @@ namespace FIXDXA_NS {
     size_t _numOwnedFacets = 0;
     size_t _nlocal;
     size_t _nghost;
+    GEO::Delaunay *_dt = nullptr;
+    const tagint *_tags = nullptr;
     static constexpr size_t _facetMap[4][3] = {{0, 1, 2}, {1, 3, 2}, {0, 2, 3}, {0, 3, 1}};
     std::vector<bool> _cellOwnership;
     std::vector<bool> _facetOwnership;
-    GEO::Delaunay *_dt = nullptr;
   };
 
 }    // namespace FIXDXA_NS
