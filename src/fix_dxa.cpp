@@ -23,7 +23,7 @@
 #include <numeric>
 #include <string>
 
-// todo remove
+// TODO remove
 #include <fmt/ranges.h>
 
 namespace LAMMPS_NS {
@@ -136,13 +136,18 @@ namespace FIXDXA_NS {
     connectClusters();
 #ifndef NDEBUG
     write_cluster_transitions();
-#endif
     write_cluster_transitions_parallel();
+#endif
 
     // Tessellation
     firstTessllation();
+    validateTessllation();
+#ifndef NDEBUG
     write_tessellation_parallel();
     write_per_rank_tessellation_();
+#endif
+    // buildEdges();
+    // updateClustersFromNeighbors();
   }
 
   void FixDXA::init()
@@ -1421,6 +1426,7 @@ namespace FIXDXA_NS {
         outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 2)]).d);
       }
     }
+    assert(outbuf.size() == entriesPerTransition * _dt.numOwnedFacets() + me == 0);
     MPI_File_write_all(outFile, outbuf.data(), outbuf.size(), MPI_DOUBLE, MPI_STATUS_IGNORE);
     MPI_File_close(&outFile);
 
@@ -1437,21 +1443,21 @@ namespace FIXDXA_NS {
     outFile << "DXA debug topology file\n" << atom->nlocal + atom->nghost << '\n';
     for (size_t i = 0; i < atom->nlocal + atom->nghost; ++i) {
       outFile << fmt::format("{} {} {} {} {}\n", atom->tag[i], (i < atom->nlocal) ? 1 : 2,
-                             atom->x[i][0], atom->x[i][1], atom->x[i][2]);
+                             _displacedAtoms[i][0], _displacedAtoms[i][1], _displacedAtoms[i][2]);
     }
     outFile << _dt.numOwnedFacets() << '\n';
     for (size_t i = 0; i < _dt.numFiniteCells(); ++i) {
       for (size_t j = 0; j < 4; ++j) {
         if (!_dt.facetIsOwned(i, j)) { continue; }
-        outFile << fmt::format("{} {} {}\n", _dt.facetVertex(i, j, 0), _dt.facetVertex(i, j, 1),
-                               _dt.facetVertex(i, j, 2));
+        outFile << fmt::format("{} {} {} {}\n", i, _dt.facetVertex(i, j, 0),
+                               _dt.facetVertex(i, j, 1), _dt.facetVertex(i, j, 2));
       }
     }
 
     utils::logmesg(lmp, "End of write_tessellation() on rank {}\n", me);
   }
 
-  bool FixDXA::validateTessllation() const
+  bool FixDXA::validateTessllation()
   {
 
     // planes of bounding box
@@ -1484,22 +1490,24 @@ namespace FIXDXA_NS {
                         {bboxMax[0], bboxMin[1], bboxMin[2]});
     std::array<Vector3d, 4> cellVerts;
     for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
-      if (!_dt.cellIsOwned(cell)) { continue; }
+      if (!_dt.cellIsOwned(cell)) {
+        _dt.setCellIsValid(cell, false);
+        continue;
+      }
       for (size_t vert = 0; vert < 4; ++vert) {
         int idx = _dt.cellVertex(cell, vert);
         cellVerts[vert] = _dt.getVertexPos(idx);
-        assert(almostEqual(cellVerts[vert][0], _displacedAtoms[idx][0]));
-        assert(almostEqual(cellVerts[vert][1], _displacedAtoms[idx][1]));
-        assert(almostEqual(cellVerts[vert][2], _displacedAtoms[idx][2]));
       }
       Sphere<double> s{cellVerts[0], cellVerts[1], cellVerts[2], cellVerts[3]};
       assert(s.valid());
       for (const auto &b : bbox) {
+        if (!_dt.cellIsValid(cell)) { break; }
         double distance = b.getSignedPointDistance(s.origin());
-        if (distance > 0 || std::abs(distance) <= s.radius()) {
-          lmp->error->all(FLERR, "Delaunay tessellation not correct!\n");
-          return false;
-        }
+        _dt.setCellIsValid(cell, (distance < 0 && std::abs(distance) > s.radius()));
+      }
+      if (!_dt.cellIsValid(cell)) {
+        lmp->error->all(FLERR, "Delaunay tessellation not correct!\n");
+        return false;
       }
     }
     return true;
@@ -1513,9 +1521,9 @@ namespace FIXDXA_NS {
     auto rng = std::unique_ptr<RanPark>(new RanPark(lmp, 1323 + me));
     for (size_t i = 0; i < 50; ++i) { rng->uniform(); };
     for (size_t i = 0; i < atom->nlocal; ++i) {
-      _displacedAtoms[i][0] = 1e-6 * (2 * rng->uniform() - 1);
-      _displacedAtoms[i][1] = 1e-6 * (2 * rng->uniform() - 1);
-      _displacedAtoms[i][2] = 1e-6 * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][0] = 1e-4 * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][1] = 1e-4 * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][2] = 1e-4 * (2 * rng->uniform() - 1);
     }
 
     _commStep = DISPLACEMENT;
@@ -1530,11 +1538,77 @@ namespace FIXDXA_NS {
 
     _dt.generateTessellation(atom->nlocal, atom->nghost, &_displacedAtoms[0][0], atom->tag);
 
-    // validateTessllation();
-
     utils::logmesg(lmp, "End of firstTessllation() on rank {}\n", me);
 
     return true;
+  }
+
+  void FixDXA::buildEdges()
+  {
+    utils::logmesg(lmp, "Start of buildEdges() on rank {}\n", me);
+    size_t a, b;
+    size_t idx = 0;
+    Edge newEdge;
+    // TODO: Find a good estimate
+    _edges.clear();
+    _edges.reserve(_dt.numFiniteCells());
+    for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
+      for (size_t facet = 0; facet < 4; ++facet) {
+        if (!_dt.facetIsOwned(cell, facet)) { continue; }
+        assert(_dt.cellIsValid(cell));
+        for (size_t e = 0; e < 3; ++e) {
+          // edge from a -> b
+          newEdge.a = _dt.facetVertex(cell, facet, e);
+          newEdge.b = _dt.facetVertex(cell, facet, (e + 1) % 3);
+          if (newEdge.a > newEdge.b) { std::swap(newEdge.a, newEdge.b); }
+          // TODO: test alternatives to linear search
+          auto pos = std::find(_edges.begin(), _edges.end(), newEdge);
+          if (pos == _edges.end()) { _edges.push_back({newEdge.a, newEdge.b}); }
+        }
+      }
+    }
+    // TODO: is this necessary
+    std::sort(_edges.begin(), _edges.end());
+    utils::logmesg(lmp, "End of buildEdges() on rank {}\n", me);
+  }
+
+  void FixDXA::updateClustersFromNeighbors()
+  {
+    utils::logmesg(lmp, "Start of updateClustersFromNeighbors() on rank {}\n", me);
+    bool done = false;
+    do {
+      done = true;
+      for (const auto &e : _edges) {
+        if (e.a < atom->nlocal && _atomClusterType[e.a] == INVALID &&
+            _atomClusterType[e.b] != INVALID) {
+          _atomClusterType[e.a] = _atomClusterType[e.b];
+          // TODO: is this necessary?
+          _atomSymmetryPermutations[e.a] = _atomSymmetryPermutations[e.b];
+          done = false;
+        } else if (e.b < atom->nlocal && _atomClusterType[e.a] != INVALID &&
+                   _atomClusterType[e.b] == INVALID) {
+          _atomClusterType[e.b] = _atomClusterType[e.a];
+          // TODO: is this necessary?
+          _atomSymmetryPermutations[e.b] = _atomSymmetryPermutations[e.a];
+          done = false;
+        }
+      }
+    } while (!done);
+
+    // TODO: is this necessary?
+    _commStep = CLUSTER;
+    comm->forward_comm(this, 2);
+    _commStep = NOCOM;
+
+    utils::logmesg(lmp, "End of updateClustersFromNeighbors() on rank {}\n", me);
+  }
+
+  void FixDXA::assignIdealLatticeVectorsToEdges()
+  {
+    const int numSteps = 4;
+    _edgeVectors.clear();
+    _edgeVectors.reserve(_edges.size());
+    for (size_t edgeIdx = 0; edgeIdx < _edges.size(); ++edgeIdx) {}
   }
 
 }    // namespace FIXDXA_NS

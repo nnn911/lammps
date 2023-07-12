@@ -323,11 +323,15 @@ namespace FIXDXA_NS {
     void write_cluster_transitions() const;
     void write_cluster_transitions_parallel() const;
 
+    void updateClustersFromNeighbors();
+
     // Tessllation
     bool firstTessllation();
-    bool validateTessllation() const;
+    bool validateTessllation();
     void write_tessellation_parallel() const;
     void write_per_rank_tessellation_() const;
+    void buildEdges();
+    void assignIdealLatticeVectorsToEdges();
 
    private:
     static constexpr size_t _maxNeighCount = 16;
@@ -361,6 +365,25 @@ namespace FIXDXA_NS {
 
     class NeighList *_neighList = nullptr;
     static std::array<CrystalStructure<_maxNeighCount>, MAXSTRUCTURECOUNT> _crystalStructures;
+
+    // Half edge structure
+    struct Edge {
+      size_t a;
+      size_t b;
+
+      bool operator==(const Edge &other) const { return (a == other.a && b == other.b); }
+      bool operator<(const Edge &other) const
+      {
+        return (a < other.a) || (a == other.a && b < other.b);
+      }
+    };
+    std::vector<Edge> _edges;
+
+    struct EdgeVector {
+      size_t vectorIndex;
+      size_t transitionIndex;
+    };
+    std::vector<EdgeVector> _edgeVectors;
   };
 }    // namespace FIXDXA_NS
 }    // namespace LAMMPS_NS
