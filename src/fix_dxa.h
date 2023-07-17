@@ -239,6 +239,7 @@ namespace FIXDXA_NS {
                              const Matrix3d &transition = Matrix3d::Identity())
     {
       clusterTransitions.emplace_back(cluster1, cluster2, transition);
+      clusterTransitions.emplace_back(cluster2, cluster1, transition.inverse());
       return clusters.size() - 1;
     }
 
@@ -248,7 +249,7 @@ namespace FIXDXA_NS {
       clusterTransitions.reserve(2 * n);
     }
 
-    size_t findCluster(tagint clusterId)
+    size_t findCluster(tagint clusterId) const
     {
       for (size_t i = 0; i < clusters.size(); ++i) {
         if (clusters[i].id == clusterId) { return i; }
@@ -256,7 +257,7 @@ namespace FIXDXA_NS {
       return clusters.size();
     }
 
-    size_t findClusterTransition(tagint clusterId1, tagint clusterId2)
+    size_t findClusterTransition(tagint clusterId1, tagint clusterId2) const
     {
       for (size_t i = 0; i < clusterTransitions.size(); ++i) {
         if ((clusterTransitions[i].cluster1 == clusterId1) &&
@@ -265,6 +266,18 @@ namespace FIXDXA_NS {
         }
       }
       return clusterTransitions.size();
+    }
+
+    bool containsTransition(tagint clusterId1, tagint clusterId2) const
+    {
+      return findClusterTransition(clusterId1, clusterId2) < clusterTransitions.size();
+    }
+
+    Vector3d applyTransition(tagint clusterId1, tagint clusterId2, const Vector3d &vector) const
+    {
+      size_t transition = findClusterTransition(clusterId1, clusterId2);
+      assert(transition < clusterTransitions.size());
+      return clusterTransitions[transition].transition * vector;
     }
 
     std::vector<Cluster> clusters;
@@ -318,6 +331,8 @@ namespace FIXDXA_NS {
     void buildClusters();
     void connectClusters();
 
+    size_t findNeighborIndex(size_t, size_t) const;
+    const Vector3d &neighborVector(size_t, size_t) const;
     double getSqNeighDistance(int, int);
 
     void write_cluster_transitions() const;
@@ -329,9 +344,14 @@ namespace FIXDXA_NS {
     bool firstTessllation();
     bool validateTessllation();
     void write_tessellation_parallel() const;
-    void write_per_rank_tessellation_() const;
+    void write_per_rank_tessellation() const;
+    void write_per_rank_edges() const;
     void buildEdges();
     void assignIdealLatticeVectorsToEdges();
+    std::pair<Vector3d, int> findPath(size_t, size_t, int) const;
+
+    // Check dislocation cells
+    bool determineIncompatibleCells(size_t) const;
 
    private:
     static constexpr size_t _maxNeighCount = 16;
@@ -344,7 +364,7 @@ namespace FIXDXA_NS {
     CommSteps _commStep = NOCOM;
 
     // std::vector<tagint> _nnListIdx;
-    std::vector<int> _nnList;
+    std::array<int, _maxNeighCount> _nnList;
     std::vector<std::pair<int, double>> _nnListBuffer;
 
     std::vector<std::array<tagint, _maxNeighCount>> _neighborIndices;
@@ -380,9 +400,11 @@ namespace FIXDXA_NS {
     std::vector<Edge> _edges;
 
     struct EdgeVector {
-      size_t vectorIndex;
-      size_t transitionIndex;
+      Vector3d vector;
+      size_t transition1;
+      size_t transition2;
     };
+
     std::vector<EdgeVector> _edgeVectors;
   };
 }    // namespace FIXDXA_NS

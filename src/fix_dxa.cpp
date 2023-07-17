@@ -144,10 +144,14 @@ namespace FIXDXA_NS {
     validateTessllation();
 #ifndef NDEBUG
     write_tessellation_parallel();
-    write_per_rank_tessellation_();
+    write_per_rank_tessellation();
 #endif
-    // buildEdges();
-    // updateClustersFromNeighbors();
+    buildEdges();
+    updateClustersFromNeighbors();
+    assignIdealLatticeVectorsToEdges();
+#ifndef NDEBUG
+    write_per_rank_edges();
+#endif
   }
 
   void FixDXA::init()
@@ -550,6 +554,10 @@ namespace FIXDXA_NS {
 
   void FixDXA::buildNNList(int ii, int numNeigh)
   {
+    // if (atom->tag[ii] == atom->tag[50505]) {
+    //   auto p = 5;
+    //   ;
+    // }
     double **x = atom->x;
     const int inum = _neighList->inum;
     assert(_neighList->inum == atom->nlocal);
@@ -557,14 +565,10 @@ namespace FIXDXA_NS {
     assert(_neighList->gnum == atom->nghost);
     const int nmax = inum + gnum;
 
-    _nnList.resize(numNeigh);
-
-    std::vector<std::pair<int, double>> _nnListBuffer;
-
     const int i = _neighList->ilist[ii];
     const int *jlist = _neighList->firstneigh[i];
     const int jnum = _neighList->numneigh[i];
-    assert((ii < inum) ? jnum > numNeigh : true);
+    assert(jnum > numNeigh);
 
     _nnListBuffer.resize(std::max(jnum, numNeigh));
     for (int jj = 0; jj < std::max(jnum, numNeigh); ++jj) {
@@ -587,18 +591,17 @@ namespace FIXDXA_NS {
   }
 
   // TODO -> this can be a std::array<CNANeighbor. _maxNeighborCount> &neighborVectors
-  bool FixDXA::getCNANeighbors(std::vector<CNANeighbor> &neighborVectors, const int index,
+  bool FixDXA::getCNANeighbors(std::vector<CNANeighbor> &neighborVectors, const int ii,
                                const int nn) const
   {
     double **x = atom->x;
-    assert(nn <= _nnList.size());
     neighborVectors.resize(nn);
     for (int i = 0; i < nn; ++i) {
       CNANeighbor &neigh = neighborVectors[i];
       assert(_nnList[i] != -1);
-      for (int k = 0; k < 3; ++k) { neigh.xyz[k] = x[_nnList[i]][k] - x[index][k]; }
+      for (int k = 0; k < 3; ++k) { neigh.xyz[k] = x[_nnList[i]][k] - x[ii][k]; }
       neigh.lengthSq = neigh.xyz.lengthSquared();
-      neigh.idx = index;
+      neigh.idx = ii;
       neigh.neighIdx = _nnList[i];
     }
     return true;
@@ -1433,7 +1436,7 @@ namespace FIXDXA_NS {
     utils::logmesg(lmp, "End of write_tessellation_parallel() on rank {}\n", me);
   }
 
-  void FixDXA::write_per_rank_tessellation_() const
+  void FixDXA::write_per_rank_tessellation() const
   {
     utils::logmesg(lmp, "Start of write_tessellation() on rank {}\n", me);
 
@@ -1445,7 +1448,7 @@ namespace FIXDXA_NS {
       outFile << fmt::format("{} {} {} {} {}\n", atom->tag[i], (i < atom->nlocal) ? 1 : 2,
                              _displacedAtoms[i][0], _displacedAtoms[i][1], _displacedAtoms[i][2]);
     }
-    outFile << _dt.numOwnedFacets() << '\n';
+    outFile << _dt.numOwnedFacets() << " triangles\n";
     for (size_t i = 0; i < _dt.numFiniteCells(); ++i) {
       for (size_t j = 0; j < 4; ++j) {
         if (!_dt.facetIsOwned(i, j)) { continue; }
@@ -1521,6 +1524,7 @@ namespace FIXDXA_NS {
     auto rng = std::unique_ptr<RanPark>(new RanPark(lmp, 1323 + me));
     for (size_t i = 0; i < 50; ++i) { rng->uniform(); };
     for (size_t i = 0; i < atom->nlocal; ++i) {
+      // TODO: This dispalcement is very large but guarantees succesful comparison with scipy delaunay
       _displacedAtoms[i][0] = 1e-4 * (2 * rng->uniform() - 1);
       _displacedAtoms[i][1] = 1e-4 * (2 * rng->uniform() - 1);
       _displacedAtoms[i][2] = 1e-4 * (2 * rng->uniform() - 1);
@@ -1550,8 +1554,8 @@ namespace FIXDXA_NS {
     size_t idx = 0;
     Edge newEdge;
     // TODO: Find a good estimate
-    _edges.clear();
-    _edges.reserve(_dt.numFiniteCells());
+    std::set<Edge> edgesSet;
+
     for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
       for (size_t facet = 0; facet < 4; ++facet) {
         if (!_dt.facetIsOwned(cell, facet)) { continue; }
@@ -1560,18 +1564,27 @@ namespace FIXDXA_NS {
           // edge from a -> b
           newEdge.a = _dt.facetVertex(cell, facet, e);
           newEdge.b = _dt.facetVertex(cell, facet, (e + 1) % 3);
+
+          assert(newEdge.a != newEdge.b);
           if (newEdge.a > newEdge.b) { std::swap(newEdge.a, newEdge.b); }
           // TODO: test alternatives to linear search
-          auto pos = std::find(_edges.begin(), _edges.end(), newEdge);
-          if (pos == _edges.end()) { _edges.push_back({newEdge.a, newEdge.b}); }
+          // auto pos = std::find(_edges.begin(), _edges.end(), newEdge);
+          // if (pos == _edges.end()) { _edges.push_back({newEdge.a, newEdge.b}); }
+          edgesSet.insert({newEdge.a, newEdge.b});
         }
       }
     }
     // TODO: is this necessary
-    std::sort(_edges.begin(), _edges.end());
+    _edges.clear();
+    _edges.reserve(edgesSet.size());
+    _edges.insert(_edges.begin(), std::make_move_iterator(edgesSet.begin()),
+                  std::make_move_iterator(edgesSet.end()));
+    assert(std::is_sorted(_edges.begin(), _edges.end()));
+    // std::sort(_edges.begin(), _edges.end())
     utils::logmesg(lmp, "End of buildEdges() on rank {}\n", me);
   }
 
+  // This can maybe probably go
   void FixDXA::updateClustersFromNeighbors()
   {
     utils::logmesg(lmp, "Start of updateClustersFromNeighbors() on rank {}\n", me);
@@ -1583,13 +1596,15 @@ namespace FIXDXA_NS {
             _atomClusterType[e.b] != INVALID) {
           _atomClusterType[e.a] = _atomClusterType[e.b];
           // TODO: is this necessary?
-          _atomSymmetryPermutations[e.a] = _atomSymmetryPermutations[e.b];
+          _atomSymmetryPermutations[e.a] = -1;
+          // _atomSymmetryPermutations[e.a] = _atomSymmetryPermutations[e.b];
           done = false;
         } else if (e.b < atom->nlocal && _atomClusterType[e.a] != INVALID &&
                    _atomClusterType[e.b] == INVALID) {
           _atomClusterType[e.b] = _atomClusterType[e.a];
           // TODO: is this necessary?
-          _atomSymmetryPermutations[e.b] = _atomSymmetryPermutations[e.a];
+          _atomSymmetryPermutations[e.b] = -1;
+          // _atomSymmetryPermutations[e.b] = _atomSymmetryPermutations[e.a];
           done = false;
         }
       }
@@ -1603,12 +1618,250 @@ namespace FIXDXA_NS {
     utils::logmesg(lmp, "End of updateClustersFromNeighbors() on rank {}\n", me);
   }
 
+  size_t FixDXA::findNeighborIndex(size_t centralAtom, size_t neighborAtom) const
+  {
+    const std::array<int, _maxNeighCount> &nnlist = _neighborIndices[centralAtom];
+    for (size_t jj = 0; jj < _neighCount; ++jj) {
+      if (nnlist[jj] == neighborAtom) {
+        return jj;
+      } else if (nnlist[jj] == -1) {
+        return -1;
+      }
+    }
+    return -1;
+  }
+
+  const Vector3d &FixDXA::neighborVector(size_t centralAtom, size_t neighborIndex) const
+  {
+    StructureType structureType = _structureType[centralAtom];
+    const auto &crystalStructure = _crystalStructures[structureType];
+    assert(neighborIndex >= 0 && neighborIndex < crystalStructure.numNeighbors);
+
+    const int symmetryPermutation = _atomSymmetryPermutations[centralAtom];
+    assert(symmetryPermutation >= 0 && symmetryPermutation < crystalStructure.permutations.size());
+
+    const auto &permutation = crystalStructure.permutations[symmetryPermutation].permutation;
+    return crystalStructure.latticeVectors[permutation[neighborIndex]];
+  }
+
+  struct Node {
+    size_t atom = 0;
+    size_t parent = 0;
+    size_t length = 0;
+    Node(size_t atom, size_t parent, size_t length) : atom{atom}, parent{parent}, length{length} {}
+    bool operator==(const Node &other) const { return other.atom == atom; }
+    bool operator==(const size_t other) const { return other == atom; }
+  };
+
+  struct NodeHash {
+    size_t operator()(const Node &node) const
+    {
+      return hashCombine(node.atom, hashCombine(node.parent, node.length));
+    }
+
+    // Boost hash combine https://stackoverflow.com/a/2595226
+    size_t hashCombine(size_t hash, size_t newValue) const
+    {
+      return hash ^= std::hash<size_t>{}(newValue) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+    }
+  };
+
+  std::pair<Vector3d, int> FixDXA::findPath(size_t atom1, size_t atom2, const int numSteps) const
+  {
+    // utils::logmesg(lmp, "findPath() atoms {} {}\n", atom1, atom2);
+    assert(atom1 != atom2);
+    // if ((atom1 == 18438 && atom2 == 18440) || (atom1 == 18440 && atom2 == 18438)) {
+    if (atom1 == 1248 && atom2 == 3890) {
+      auto p = 10;
+      ;
+    }
+    const bool validCluster1 = _atomSymmetryPermutations[atom1] != -1;
+    const bool validCluster2 = _atomSymmetryPermutations[atom2] != -1;
+    if (validCluster1) {
+      const size_t neighborIndex = findNeighborIndex(atom1, atom2);
+      if (neighborIndex != -1) {
+        const Vector3d &neighVec = neighborVector(atom1, neighborIndex);
+        return {neighVec, _atomClusterType[atom1]};
+      }
+    }
+    if (validCluster2) {
+      const size_t neighborIndex = findNeighborIndex(atom2, atom1);
+      if (neighborIndex != -1) {
+        const Vector3d &neighVec = neighborVector(atom2, neighborIndex);
+        return {-1 * neighVec, _atomClusterType[atom2]};
+      };
+    }
+
+    if (numSteps == 1) { return {{0, 0, 0}, -1}; }
+
+    std::deque<Node> queue;
+    std::vector<Node> visited;
+    visited.reserve(100);
+    // std::vector<bool> visitedFlag;
+    // visitedFlag.resize(atom->nlocal + atom->nghost, false);
+
+    // std::set<Node> visited;
+
+    // Breadth first path search
+    queue.push_front({atom1, (size_t) 0, (size_t) 0});
+    visited.push_back(queue.front());
+    // visitedFlag[atom1] = true;
+    while (!queue.empty()) {
+      Node &currentNode = queue.front();
+      queue.pop_front();
+
+      int neighAtom = -1;
+      bool transition = false;
+      int neighCount = _crystalStructures[_structureType[currentNode.atom]].numNeighbors;
+      assert(neighCount <= _neighCount);
+      const std::array<int, _maxNeighCount> &nnlist = _neighborIndices[currentNode.atom];
+
+      for (size_t jj = 0; jj < neighCount; ++jj) {
+        neighAtom = nnlist[jj];
+        if (neighAtom == -1) { continue; }
+        // if the atomCluster only got filled by the previous propagation of cluster -> skip
+        if (_atomSymmetryPermutations[neighAtom] == -1) { continue; }
+
+        if (_atomClusterType[currentNode.atom] == _atomClusterType[neighAtom]) {
+          transition = true;
+        } else {
+          // TODO is the cluster graph bi-directional / do I need to check the inverse transition?
+          transition = (_clusterGraph.containsTransition(_atomClusterType[currentNode.atom],
+                                                         _atomClusterType[neighAtom]));
+        }
+
+        // we have found a path
+        if (transition && neighAtom == atom2) { break; }
+
+        Node neighNode{(size_t) neighAtom, currentNode.atom, currentNode.length + 1};
+        // neighbor has not been visited
+        if (transition && neighNode.length < numSteps &&
+            std::find(visited.begin(), visited.end(), neighNode) == visited.end()) {
+          // if (transition && neighNode.length < numSteps && !visitedFlag[neighNode.atom]) {
+          queue.push_back(neighNode);
+          visited.push_back(neighNode);
+          // visitedFlag[neighNode.atom] = true;
+        }
+      }
+
+      // we have found a path
+      if (transition && neighAtom == atom2) {
+
+        // neighIdx -> child
+        // current -> parent
+
+        // QUESTION: neighVec currentNode cluster?
+        size_t neighIndex = findNeighborIndex(currentNode.atom, neighAtom);
+        Vector3d neighVec = neighborVector(currentNode.atom, neighIndex);
+
+        const Node *child = &currentNode;
+        auto pos = std::find(visited.begin(), visited.end(), child->parent);
+        assert(pos != visited.end());
+        const Node *parent = &(*pos);
+
+        size_t exitVar = 0;
+        while (true) {
+          if (_atomClusterType[child->atom] == _atomClusterType[parent->atom]) {
+            neighIndex = findNeighborIndex(parent->atom, child->atom);
+            neighVec += neighborVector(parent->atom, neighIndex);
+          } else {
+            neighIndex = findNeighborIndex(parent->atom, child->atom);
+            const Vector3d &neighVecPreCluster = neighborVector(parent->atom, neighIndex);
+            neighVec += _clusterGraph.applyTransition(
+                _atomClusterType[child->atom], _atomClusterType[parent->atom], neighVecPreCluster);
+          }
+          child = parent;
+          if (child->atom == atom1) { break; }
+          pos = std::find(visited.begin(), visited.end(), child->parent);
+          assert(pos != visited.end());
+          parent = &(*pos);
+          if (exitVar++ == 2 * numSteps) { unreachable(lmp); }
+        };
+        return {neighVec, _atomClusterType[atom1]};
+      }
+    }
+
+    // no path was found
+    return {{0, 0, 0}, -1};
+  }
+
   void FixDXA::assignIdealLatticeVectorsToEdges()
   {
+    utils::logmesg(lmp, "Start of assignIdealLatticeVectorsToEdges() on rank {}\n", me);
     const int numSteps = 4;
     _edgeVectors.clear();
-    _edgeVectors.reserve(_edges.size());
-    for (size_t edgeIdx = 0; edgeIdx < _edges.size(); ++edgeIdx) {}
+    _edgeVectors.resize(_edges.size());
+
+    for (size_t edgeIdx = 0; edgeIdx < _edges.size(); ++edgeIdx) {
+      const Edge &edge = _edges[edgeIdx];
+      size_t cluster1Idx = _atomClusterType[edge.a];
+      size_t cluster2Idx = _atomClusterType[edge.b];
+
+      assert(cluster1Idx != INVALID && cluster2Idx != INVALID);
+      if (cluster1Idx == INVALID || cluster2Idx == INVALID) { continue; }
+
+      int idealCluster;
+      Vector3d idealVector;
+      std::tie(idealVector, idealCluster) = findPath(edge.a, edge.b, 4);
+      if (idealCluster == -1) { continue; }
+      if (idealCluster != cluster1Idx &&
+          _clusterGraph.containsTransition(cluster2Idx, idealCluster)) {
+        idealVector = _clusterGraph.applyTransition(cluster2Idx, idealCluster, idealVector);
+      }
+      _edgeVectors[edgeIdx].vector = idealVector;
+      _edgeVectors[edgeIdx].transition1 = cluster1Idx;
+      _edgeVectors[edgeIdx].transition2 = cluster2Idx;
+    }
+    utils::logmesg(lmp, "End of assignIdealLatticeVectorsToEdges() on rank {}\n", me);
+  }
+
+  void FixDXA::write_per_rank_edges() const
+  {
+    utils::logmesg(lmp, "Start of write_per_rank_edges() on rank {}\n", me);
+
+    const std::string fname = fmt::format("edges_on_rank_{}.xyz", me);
+    std::ofstream outFile(fname);
+    if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
+    outFile << "DXA debug topology file\n" << atom->nlocal + atom->nghost << '\n';
+    for (size_t i = 0; i < atom->nlocal + atom->nghost; ++i) {
+      outFile << fmt::format("{} {} {} {} {}\n", atom->tag[i], (i < atom->nlocal) ? 1 : 2,
+                             _displacedAtoms[i][0], _displacedAtoms[i][1], _displacedAtoms[i][2]);
+    }
+    outFile << _edges.size() << " edges\n";
+    for (size_t i = 0; i < _edges.size(); ++i) {
+      outFile << fmt::format("{} {} {} {} {} {} {}\n", _edges[i].a, _edges[i].b,
+                             _edgeVectors[i].vector[0], _edgeVectors[i].vector[1],
+                             _edgeVectors[i].vector[2], _edgeVectors[i].transition1,
+                             _edgeVectors[i].transition2);
+    }
+    outFile << _clusterGraph.clusters.size() << " clusters\n";
+    for (size_t i = 0; i < _clusterGraph.clusters.size(); ++i) {
+      outFile << fmt::format("{} {} {} {} {} {} {} {} {} {}\n", _clusterGraph.clusters[i].id,
+                             _clusterGraph.clusters[i].orientation.column(0)[0],
+                             _clusterGraph.clusters[i].orientation.column(0)[1],
+                             _clusterGraph.clusters[i].orientation.column(0)[2],
+                             _clusterGraph.clusters[i].orientation.column(1)[0],
+                             _clusterGraph.clusters[i].orientation.column(1)[1],
+                             _clusterGraph.clusters[i].orientation.column(1)[2],
+                             _clusterGraph.clusters[i].orientation.column(2)[0],
+                             _clusterGraph.clusters[i].orientation.column(2)[1],
+                             _clusterGraph.clusters[i].orientation.column(2)[2]);
+    }
+    utils::logmesg(lmp, "End of write_per_rank_edges() on rank {}\n", me);
+  }
+
+  bool FixDXA::determineIncompatibleCells(size_t cell) const
+  {
+    if (!_dt.cellIsFinite(cell)) { return false; }
+
+    // store the 6 edges of the tetrahedron
+    static constexpr std::array<std::array<int, 2>, 6> edgeVertexOrder{
+        {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}}};
+    static const std::array<std::array<int, 3>, 4> facetLoops{
+        {{0, 4, 2}, {1, 5, 2}, {0, 3, 1}, {3, 5, 4}}};
+
+    std::array<EdgeVector, 6> edgeVectors;
+    for (int edgeIndex = 0; edgeIndex < 6; edgeIndex++) {}
   }
 
 }    // namespace FIXDXA_NS
