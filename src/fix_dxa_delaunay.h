@@ -121,6 +121,18 @@ namespace FIXDXA_NS {
 
     bool isValid() const { return _isValid; }
 
+    int alphaTest(size_t cell, double alpha) const
+    {
+      std::array<Vector3d, 4> cellVerts;
+      for (size_t vert = 0; vert < 4; ++vert) {
+        cellVerts[vert] = getVertexPos(cellVertex(cell, vert));
+      }
+      Sphere<double> s{cellVerts[0], cellVerts[1], cellVerts[2], cellVerts[3]};
+      assert(s.valid());
+      if (s.unreliable()) { return -1; }
+      return s.radius() < alpha;
+    }
+
    private:
     bool _facetIsOwned(size_t cell, size_t facet) const
     {

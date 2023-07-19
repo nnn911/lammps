@@ -16,6 +16,7 @@ namespace FIXDXA_NS {
 
   static constexpr double EPSILON = 1e-12;
   static constexpr double TRANSITION_MATRIX_EPSILON = 1e-4;
+  static constexpr double LATTICE_VECTOR_EPSILON = 1e-3;
 
   template <typename T> constexpr inline bool almostEqual(T a, T b, T eps = EPSILON)
   {
@@ -59,6 +60,11 @@ namespace FIXDXA_NS {
     {
       return (std::abs(x() - v.x()) < eps) && (std::abs(y() - v.y()) < eps) &&
           (std::abs(z() - v.z()) < eps);
+    }
+
+    constexpr inline bool equals(T v, T eps) const
+    {
+      return (std::abs(x() - v) < eps) && (std::abs(y() - v) < eps) && (std::abs(z() - v) < eps);
     }
 
     constexpr Vector3 operator-(const Vector3 &v) const
@@ -115,8 +121,8 @@ namespace FIXDXA_NS {
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   template <typename T> class Matrix3 : public std::array<Vector3<T>, 3> {
    public:
-    Matrix3() = default;
-    Matrix3(T e00, T e01, T e02, T e10, T e11, T e12, T e20, T e21, T e22) :
+    constexpr Matrix3() = default;
+    constexpr Matrix3(T e00, T e01, T e02, T e10, T e11, T e12, T e20, T e21, T e22) :
         std::array<Vector3<T>, 3>{
             {Vector3<T>(e00, e10, e20), Vector3<T>(e01, e11, e21), Vector3<T>(e02, e12, e22)}} {};
 
@@ -124,10 +130,11 @@ namespace FIXDXA_NS {
     {
       return Matrix3((T) 1, (T) 0, (T) 0, (T) 0, (T) 1, (T) 0, (T) 0, (T) 0, (T) 1);
     };
+
     static constexpr Matrix3 Zero()
     {
       return Matrix3((T) 0, (T) 0, (T) 0, (T) 0, (T) 0, (T) 0, (T) 0, (T) 0, (T) 0);
-    };
+    }
 
     constexpr T operator()(size_t row, size_t col) const { return (*this)[col][row]; }
     T &operator()(size_t row, size_t col) { return (*this)[col][row]; }
@@ -362,9 +369,17 @@ namespace FIXDXA_NS {
         _origin = {Dx / (2.0 * alpha), Dy / (2.0 * alpha), Dz / (2.0 * alpha)};
         // Reset the translation original translation
         _origin += p0o;
-        _radius =
-            std::sqrt(Dx * Dx + Dy * Dy + Dz * Dz - 4.0 * alpha * gamma) / (2.0 * std::abs(alpha));
-        _valid = true;
+        T nomin = Dx * Dx + Dy * Dy + Dz * Dz - 4.0 * alpha * gamma;
+        T denom = 2.0 * std::abs(alpha);
+        if (nomin < 0) {
+          _valid = false;
+        } else {
+          _radius = std::sqrt(nomin) / (denom);
+          _valid = true;
+        }
+
+        // for certain sliver tetrahedrons the results might be unreliable
+        if (_valid && nomin < 1e-9 && std::abs(denom) < 1e-9) { _unreliable = true; }
       }
 #ifndef NDEBUG
       if (valid()) {
@@ -402,6 +417,7 @@ namespace FIXDXA_NS {
 #endif
     }
     bool valid() const { return _valid; }
+    bool unreliable() const { return _unreliable; }
     const Vector3<T> &origin() const { return _origin; }
     T radius() const { return _radius; }
 
@@ -426,6 +442,7 @@ namespace FIXDXA_NS {
     }
 
     bool _valid = false;
+    bool _unreliable = false;
     Vector3<T> _origin;
     T _radius;
   };

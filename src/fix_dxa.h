@@ -147,6 +147,7 @@ namespace FIXDXA_NS {
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   // ENUMS
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  // TODO -> MAKE THESE ENUM CLASSES
   enum StructureType : int { BCC = 0, CUBIC_DIA, FCC, HCP, HEX_DIA, OTHER, MAXSTRUCTURECOUNT };
   enum ClusterStatus : tagint { INVALID = -1 };
   enum CommSteps { STRUCTURE, STRUCTURE_NEIGHS, CLUSTER, DISPLACEMENT, NOCOM };
@@ -199,6 +200,7 @@ namespace FIXDXA_NS {
   struct Cluster {
     tagint id;
     StructureType structure;
+    size_t symmetryPermutationIndex = 0;
     Matrix3d orientation = Matrix3d::Identity();
     Cluster(tagint id, StructureType structure) : id{id}, structure{structure} {}
   };
@@ -268,6 +270,23 @@ namespace FIXDXA_NS {
       return clusterTransitions.size();
     }
 
+    // TODO: make this return a reference
+    // -> make identity matrix static or member if this!
+    Matrix3d getTransitionMatrix(tagint clusterId1, tagint clusterId2) const
+    {
+      if (clusterId1 == clusterId2) { return Matrix3d::Identity(); }
+      const size_t pos = findClusterTransition(clusterId1, clusterId2);
+      return clusterTransitions[pos].transition;
+    }
+    // TODO: make this return a reference
+    // -> make identity matrix static or member if this!
+    Matrix3d getReverseTransitionMatrix(tagint clusterId1, tagint clusterId2) const
+    {
+      if (clusterId1 == clusterId2) { return Matrix3d::Identity(); }
+      const size_t pos = findClusterTransition(clusterId2, clusterId1);
+      return clusterTransitions[pos].transition;
+    }
+
     bool containsTransition(tagint clusterId1, tagint clusterId2) const
     {
       return findClusterTransition(clusterId1, clusterId2) < clusterTransitions.size();
@@ -275,9 +294,16 @@ namespace FIXDXA_NS {
 
     Vector3d applyTransition(tagint clusterId1, tagint clusterId2, const Vector3d &vector) const
     {
+      if (clusterId1 == clusterId2) { return vector; }
       size_t transition = findClusterTransition(clusterId1, clusterId2);
       assert(transition < clusterTransitions.size());
       return clusterTransitions[transition].transition * vector;
+    }
+
+    Vector3d applyReverseTransition(tagint clusterId1, tagint clusterId2,
+                                    const Vector3d &vector) const
+    {
+      return applyTransition(clusterId2, clusterId1, vector);
     }
 
     std::vector<Cluster> clusters;
@@ -331,7 +357,7 @@ namespace FIXDXA_NS {
     void buildClusters();
     void connectClusters();
 
-    size_t findNeighborIndex(size_t, size_t) const;
+    int findNeighborIndex(size_t, size_t) const;
     const Vector3d &neighborVector(size_t, size_t) const;
     double getSqNeighDistance(int, int);
 
@@ -351,7 +377,9 @@ namespace FIXDXA_NS {
     std::pair<Vector3d, int> findPath(size_t, size_t, int) const;
 
     // Check dislocation cells
-    bool determineIncompatibleCells(size_t) const;
+    bool classifyElasticCompatible(size_t) const;
+    int classifyCell(size_t) const;
+    void meshConstructor();
 
    private:
     static constexpr size_t _maxNeighCount = 16;
@@ -366,9 +394,9 @@ namespace FIXDXA_NS {
     // std::vector<tagint> _nnListIdx;
     std::array<int, _maxNeighCount> _nnList;
     std::vector<std::pair<int, double>> _nnListBuffer;
-
     std::vector<std::array<tagint, _maxNeighCount>> _neighborIndices;
     decltype(_neighborIndices) _neighborTags;
+    double _maxNeighDistance = -1;
 
     std::vector<StructureType> _structureType;
     std::vector<int> _atomSymmetryPermutations;
