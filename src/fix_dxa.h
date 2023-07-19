@@ -379,7 +379,8 @@ namespace FIXDXA_NS {
     // Check dislocation cells
     bool classifyElasticCompatible(size_t) const;
     int classifyCell(size_t) const;
-    void meshConstructor();
+    void classifyRegions();
+    void constructMesh();
 
    private:
     static constexpr size_t _maxNeighCount = 16;
@@ -404,6 +405,13 @@ namespace FIXDXA_NS {
     ClusterGraph _clusterGraph;
 
     std::vector<Vector3d> _displacedAtoms;
+    // Todo: _regions and _atomSymmetryPermutations probably not needed at the same time
+    // could be merged
+    // >=0 -> region value
+    // -1 -> elastic incompatible
+    // -2 -> cell is not filled
+    // -3 -> cell is not requred
+    std::vector<int> _regions;
 
     // std::unique_ptr<Delaunay> _dt = nullptr;
     Delaunay _dt;

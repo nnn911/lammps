@@ -151,6 +151,8 @@ namespace FIXDXA_NS {
     assignIdealLatticeVectorsToEdges();
 #ifndef NDEBUG
     write_per_rank_edges();
+    classifyRegions();
+    constructMesh();
 #endif
   }
 
@@ -1527,7 +1529,7 @@ namespace FIXDXA_NS {
                         {bboxMax[0], bboxMin[1], bboxMin[2]});
     std::array<Vector3d, 4> cellVerts;
     for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
-      if (!_dt.cellIsOwned(cell)) {
+      if (!_dt.cellIsRequired(cell)) {
         _dt.setCellIsValid(cell, false);
         continue;
       }
@@ -1537,12 +1539,14 @@ namespace FIXDXA_NS {
       }
       Sphere<double> s{cellVerts[0], cellVerts[1], cellVerts[2], cellVerts[3]};
       assert(s.valid());
+      bool isValid = true;
       for (const auto &b : bbox) {
-        if (!_dt.cellIsValid(cell)) { break; }
         double distance = b.getSignedPointDistance(s.origin());
-        _dt.setCellIsValid(cell, (distance < 0 && std::abs(distance) > s.radius()));
+        isValid = distance < 0 && std::abs(distance) > s.radius();
+        if (!isValid) { break; }
       }
-      if (!_dt.cellIsValid(cell)) {
+      _dt.setCellIsValid(cell, isValid);
+      if (!isValid) {
         lmp->error->all(FLERR, "Delaunay tessellation not correct!\n");
         return false;
       }
@@ -1996,18 +2000,67 @@ namespace FIXDXA_NS {
     return -1;
   };
 
-  void FixDXA::meshConstructor()
+  void FixDXA::classifyRegions()
   {
-    double alpha = _maxNeighDistance;
+    _regions.clear();
+    _regions.resize(_dt.numCells(), -3);
+    double alpha = 5 * _maxNeighDistance;
     for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
-      if (!_dt.cellIsOwned(cell)) { continue; }
-      // TODO -> implement cell validation?
-      // TODO: infinite cells are never valid? -> cells could remain valid after all to all exchange -> surface
+      if (!_dt.cellIsRequired(cell)) { continue; }
       assert(_dt.cellIsValid(cell));
       bool isFilled = false;
-      if (_dt.cellIsFinite(cell)) {}
+      if (_dt.cellIsFinite(cell)) {
+        Delaunay::AlphaTestResult alphaTestResult = _dt.alphaTest(cell, alpha);
+        switch (alphaTestResult) {
+          case Delaunay::AlphaTestResult::INSIDE: {
+            isFilled = true;
+            break;
+          }
+          case Delaunay::AlphaTestResult::OUTSIDE: {
+            break;
+          }
+          case Delaunay::AlphaTestResult::UNRELIABLE: {
+            // for unrealiable alpha test results we compare against our four neighbors. If any neighbor is not filled
+            // the current cell is set to not filled.
+            size_t facet = 0;
+            for (; facet < 4; ++facet) {
+              int oppositeCell = _dt.oppositeCell(cell, facet);
+              assert(oppositeCell != -1);
+              if (!_dt.cellIsFinite(oppositeCell)) { break; }
+              Delaunay::AlphaTestResult oppAlphaTestResult = _dt.alphaTest(oppositeCell, alpha);
+              if (oppAlphaTestResult == Delaunay::AlphaTestResult::OUTSIDE) { break; }
+            }
+            isFilled = facet == 4;
+            break;
+          }
+          default: {
+            unreachable(lmp);
+            break;
+          }
+        }    // end of switch
+      }      // end of if
+
+      if (isFilled) {
+        _regions[cell] = classifyCell(cell);
+      } else {
+        _regions[cell] = -2;
+      }
     }
-  };
+  }
+
+  void FixDXA::constructMesh()
+  {
+    assert(_regions.size() == _dt.numCells());
+    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+      if (!_dt.cellIsOwned(cell)) { continue; }
+      assert(_regions[cell] != -3);
+      for (size_t facet = 4; facet < 4; ++facet) {
+        int oppositeCell = _dt.oppositeCell(cell, facet);
+        assert(oppositeCell != -1);
+        assert(_regions[oppositeCell] != -3);
+      }
+    }
+  }
 
 }    // namespace FIXDXA_NS
 }    // namespace LAMMPS_NS
