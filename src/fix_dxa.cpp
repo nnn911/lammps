@@ -26,6 +26,16 @@
 // TODO remove
 #include <fmt/ranges.h>
 
+// TODO:
+// early exit if there's no atom of the input structure type
+// avoid crash in distributing clusters to neighbors
+
+#define DEBUGLOG 1
+#define debugLog(lmp, string, ...)                            \
+  do {                                                        \
+    if (DEBUGLOG) utils::logmesg(lmp, string, ##__VA_ARGS__); \
+  } while (0)
+
 namespace LAMMPS_NS {
 namespace FIXDXA_NS {
   [[noreturn]] static void unreachable(LAMMPS *lmp)
@@ -89,6 +99,8 @@ namespace FIXDXA_NS {
       Fix(lmp, narg, arg), _inputStructure{getInputStructure(narg, arg, _minNarg)},
       _neighCount{getNeighCount(_inputStructure)}
   {
+    debugLog(lmp, "Begin of FixDXA() on rank {}\n", me);
+
     if (narg < _minNarg) error->all(FLERR, "Not enough parameters specified for fix DXA");
     if (_inputStructure == OTHER)
       error->all(FLERR, "Invalid input structure parameter for fix DXA");
@@ -114,7 +126,7 @@ namespace FIXDXA_NS {
 
     MPI_Comm_rank(world, &me);
 
-    utils::logmesg(lmp, "End of FixDXA() on rank {}\n", me);
+    debugLog(lmp, "End of FixDXA() on rank {}\n", me);
   }
 
   FixDXA::~FixDXA()
@@ -178,7 +190,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::setup(int)
   {
-    utils::logmesg(lmp, "Fix DXA version {}\n", VERSION);
+    debugLog(lmp, "Fix DXA version {}\n", VERSION);
     end_of_step();
   }
 
@@ -628,7 +640,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::identifyCrystalStructure()
   {
-    utils::logmesg(lmp, "Start of identifyCrystalStructure() on rank {}\n", me);
+    debugLog(lmp, "Start of identifyCrystalStructure() on rank {}\n", me);
     tagint *atomTags = atom->tag;
     //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     // Adaptive neighbor cutoff
@@ -917,11 +929,11 @@ namespace FIXDXA_NS {
     for (int ii = 0; ii < atom->nlocal; ++ii) {
       summary[static_cast<size_t>(_structureType[ii])] += 1;
     }
-    utils::logmesg(lmp, "Rank {}:\n", me);
+    debugLog(lmp, "Rank {}:\n", me);
     for (int i = 0; i < summary.size(); ++i) {
-      utils::logmesg(lmp, "\nstructure {}: {} / {}", i, summary[i], atom->nlocal);
+      debugLog(lmp, "\nstructure {}: {} / {}", i, summary[i], atom->nlocal);
     }
-    utils::logmesg(lmp, "\n");
+    debugLog(lmp, "\n");
 
     pack_neighborIndices_forward_comm();
     _commStep = STRUCTURE_NEIGHS;
@@ -929,7 +941,7 @@ namespace FIXDXA_NS {
     _commStep = NOCOM;
     unpack_neighborIndices_forward_comm();
 
-    utils::logmesg(lmp, "End of identifyCrystalStructure() on rank {}\n", me);
+    debugLog(lmp, "End of identifyCrystalStructure() on rank {}\n", me);
   }
 
   static inline Vector3d xToVector(double *x)
@@ -939,7 +951,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::buildClusters()
   {
-    utils::logmesg(lmp, "Start of buildClusters() on rank {}\n", me);
+    debugLog(lmp, "Start of buildClusters() on rank {}\n", me);
 
     tagint *atomTags = atom->tag;
     double **x = atom->x;
@@ -1088,7 +1100,7 @@ namespace FIXDXA_NS {
     comm->forward_comm(this, 2);
     _commStep = NOCOM;
 
-    utils::logmesg(lmp, "End of buildClusters() on rank {}\n", me);
+    debugLog(lmp, "End of buildClusters() on rank {}\n", me);
   }
 
   bool FixDXA::addNeighborIndex(int neighListIndex, int indexToAdd)
@@ -1104,7 +1116,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::connectClusters()
   {
-    utils::logmesg(lmp, "Start of connectClusters() on rank {}\n", me);
+    debugLog(lmp, "Start of connectClusters() on rank {}\n", me);
     tagint *atomTags = atom->tag;
 
     for (int currentAtom = 0; currentAtom < atom->nlocal; ++currentAtom) {
@@ -1186,16 +1198,15 @@ namespace FIXDXA_NS {
       }
     }
 
-    utils::logmesg(lmp, "Clusters on rank {}: {}\n", me, _clusterGraph.numClusters());
-    utils::logmesg(lmp, "Clusters transitions on rank {}: {}\n", me,
-                   _clusterGraph.numTransitions());
+    debugLog(lmp, "Clusters on rank {}: {}\n", me, _clusterGraph.numClusters());
+    debugLog(lmp, "Clusters transitions on rank {}: {}\n", me, _clusterGraph.numTransitions());
 
-    utils::logmesg(lmp, "End of connectClusters() on rank {}\n", me);
+    debugLog(lmp, "End of connectClusters() on rank {}\n", me);
   }
 
   void FixDXA::write_cluster_transitions() const
   {
-    utils::logmesg(lmp, "Start of write_cluster_transitions() on rank {}\n", me);
+    debugLog(lmp, "Start of write_cluster_transitions() on rank {}\n", me);
 
     const std::string fname = fmt::format("cluster_transition_rank_{}.data", me);
     std::ofstream outFile(fname);
@@ -1209,12 +1220,12 @@ namespace FIXDXA_NS {
           t.transition.column(1)[1], t.transition.column(2)[1], t.transition.column(0)[2],
           t.transition.column(1)[2], t.transition.column(2)[2]);
     }
-    utils::logmesg(lmp, "End of write_cluster_transitions() on rank {}\n", me);
+    debugLog(lmp, "End of write_cluster_transitions() on rank {}\n", me);
   }
 
   void FixDXA::write_cluster_transitions_parallel() const
   {
-    utils::logmesg(lmp, "Start of write_cluster_transitions_parallel() on rank {}\n", me);
+    debugLog(lmp, "Start of write_cluster_transitions_parallel() on rank {}\n", me);
 
     int nprocs;
     MPI_Comm_size(world, &nprocs);
@@ -1252,7 +1263,7 @@ namespace FIXDXA_NS {
     }
     MPI_File_write_all(outFile, outbuf.data(), outbuf.size(), MPI_DOUBLE, MPI_STATUS_IGNORE);
     MPI_File_close(&outFile);
-    utils::logmesg(lmp, "End of write_cluster_transitions_parallel() on rank {}\n", me);
+    debugLog(lmp, "End of write_cluster_transitions_parallel() on rank {}\n", me);
   }
 
   /*++++++++++++++++++++++++++++++++
@@ -1266,7 +1277,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::pack_neighborIndices_forward_comm()
   {
-    utils::logmesg(lmp, "Start of pack_neighborIndices_forward_comm() on rank {}\n", me);
+    debugLog(lmp, "Start of pack_neighborIndices_forward_comm() on rank {}\n", me);
 
     _neighborTags.resize(atom->nlocal);
     tagint *atomTags = atom->tag;
@@ -1276,12 +1287,12 @@ namespace FIXDXA_NS {
                                                              : -1;
       }
     }
-    utils::logmesg(lmp, "End of pack_neighborIndices_forward_comm() on rank {}\n", me);
+    debugLog(lmp, "End of pack_neighborIndices_forward_comm() on rank {}\n", me);
   }
 
   void FixDXA::unpack_neighborIndices_forward_comm()
   {
-    utils::logmesg(lmp, "Start of unpack_neighborIndices_forward_comm() on rank {}\n", me);
+    debugLog(lmp, "Start of unpack_neighborIndices_forward_comm() on rank {}\n", me);
 
     size_t ntotal = atom->nlocal + atom->nghost;
     assert(_neighborTags.size() == ntotal);
@@ -1316,7 +1327,7 @@ namespace FIXDXA_NS {
         _neighborIndices[i][j] = bestIndex;
       }
     }
-    utils::logmesg(lmp, "End of unpack_neighborIndices_forward_comm() on rank {}\n", me);
+    debugLog(lmp, "End of unpack_neighborIndices_forward_comm() on rank {}\n", me);
   }
 
   int FixDXA::pack_forward_comm(int n, int *list, double *buf, int /*pbc_flag*/, int * /*pbc*/)
@@ -1427,7 +1438,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::write_tessellation_parallel() const
   {
-    utils::logmesg(lmp, "Start of write_tessellation_parallel() on rank {}\n", me);
+    debugLog(lmp, "Start of write_tessellation_parallel() on rank {}\n", me);
 
     int nprocs;
     MPI_Comm_size(world, &nprocs);
@@ -1466,16 +1477,16 @@ namespace FIXDXA_NS {
         outbuf.push_back(ubuf(atom->tag[_dt.facetVertex(cell, facet, 2)]).d);
       }
     }
-    assert(outbuf.size() == entriesPerTransition * _dt.numOwnedFacets() + me == 0);
+    assert(outbuf.size() == entriesPerTransition * _dt.numOwnedFacets() + (me == 0));
     MPI_File_write_all(outFile, outbuf.data(), outbuf.size(), MPI_DOUBLE, MPI_STATUS_IGNORE);
     MPI_File_close(&outFile);
 
-    utils::logmesg(lmp, "End of write_tessellation_parallel() on rank {}\n", me);
+    debugLog(lmp, "End of write_tessellation_parallel() on rank {}\n", me);
   }
 
   void FixDXA::write_per_rank_tessellation() const
   {
-    utils::logmesg(lmp, "Start of write_tessellation() on rank {}\n", me);
+    debugLog(lmp, "Start of write_tessellation() on rank {}\n", me);
 
     const std::string fname = fmt::format("tessellation_on_rank_{}.xyz", me);
     std::ofstream outFile(fname);
@@ -1494,7 +1505,7 @@ namespace FIXDXA_NS {
       }
     }
 
-    utils::logmesg(lmp, "End of write_tessellation() on rank {}\n", me);
+    debugLog(lmp, "End of write_tessellation() on rank {}\n", me);
   }
 
   bool FixDXA::validateTessllation()
@@ -1557,7 +1568,7 @@ namespace FIXDXA_NS {
 
   bool FixDXA::firstTessllation()
   {
-    utils::logmesg(lmp, "Start of firstTessllation() on rank {}\n", me);
+    debugLog(lmp, "Start of firstTessllation() on rank {}\n", me);
     size_t ntotal = atom->nlocal + atom->nghost;
     _displacedAtoms.resize(ntotal);
     auto rng = std::unique_ptr<RanPark>(new RanPark(lmp, 1323 + me));
@@ -1581,14 +1592,14 @@ namespace FIXDXA_NS {
 
     _dt.generateTessellation(atom->nlocal, atom->nghost, &_displacedAtoms[0][0], atom->tag);
 
-    utils::logmesg(lmp, "End of firstTessllation() on rank {}\n", me);
+    debugLog(lmp, "End of firstTessllation() on rank {}\n", me);
 
     return true;
   }
 
   void FixDXA::buildEdges()
   {
-    utils::logmesg(lmp, "Start of buildEdges() on rank {}\n", me);
+    debugLog(lmp, "Start of buildEdges() on rank {}\n", me);
     size_t a, b;
     size_t idx = 0;
     Edge newEdge;
@@ -1621,13 +1632,13 @@ namespace FIXDXA_NS {
                   std::make_move_iterator(edgesSet.end()));
     assert(std::is_sorted(_edges.begin(), _edges.end()));
     // std::sort(_edges.begin(), _edges.end())
-    utils::logmesg(lmp, "End of buildEdges() on rank {}\n", me);
+    debugLog(lmp, "End of buildEdges() on rank {}\n", me);
   }
 
   // This can maybe probably go
   void FixDXA::updateClustersFromNeighbors()
   {
-    utils::logmesg(lmp, "Start of updateClustersFromNeighbors() on rank {}\n", me);
+    debugLog(lmp, "Start of updateClustersFromNeighbors() on rank {}\n", me);
     bool done = false;
     do {
       done = true;
@@ -1655,7 +1666,7 @@ namespace FIXDXA_NS {
     comm->forward_comm(this, 2);
     _commStep = NOCOM;
 
-    utils::logmesg(lmp, "End of updateClustersFromNeighbors() on rank {}\n", me);
+    debugLog(lmp, "End of updateClustersFromNeighbors() on rank {}\n", me);
   }
 
   int FixDXA::findNeighborIndex(size_t centralAtom, size_t neighborAtom) const
@@ -1708,7 +1719,7 @@ namespace FIXDXA_NS {
 
   std::pair<Vector3d, int> FixDXA::findPath(size_t atom1, size_t atom2, const int numSteps) const
   {
-    // utils::logmesg(lmp, "findPath() atoms {} {}\n", atom1, atom2);
+    // debugLog(lmp, "findPath() atoms {} {}\n", atom1, atom2);
     assert(atom1 != atom2);
 
     const bool validCluster1 = _atomSymmetryPermutations[atom1] != -1;
@@ -1751,8 +1762,9 @@ namespace FIXDXA_NS {
       for (size_t jj = 0; jj < neighCount; ++jj) {
         neighAtom = nnlist[jj];
         if (neighAtom == -1) { continue; }
-        // TODO: Only consider paths in the processor owned domain?
-        // if (neighAtom < atom->nlocal) { continue; }
+        // Path should only traverse valid cells
+        if (!_dt.vertexIsRequired(neighAtom)) { continue; }
+
         // if the atomCluster only got filled by the previous propagation of cluster -> skip
         if (_atomSymmetryPermutations[neighAtom] == -1) { continue; }
 
@@ -1821,7 +1833,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::assignIdealLatticeVectorsToEdges()
   {
-    utils::logmesg(lmp, "Start of assignIdealLatticeVectorsToEdges() on rank {}\n", me);
+    debugLog(lmp, "Start of assignIdealLatticeVectorsToEdges() on rank {}\n", me);
     const int numSteps = 4;
     _edgeVectors.clear();
     _edgeVectors.resize(_edges.size());
@@ -1851,12 +1863,12 @@ namespace FIXDXA_NS {
       _edgeVectors[edgeIdx].transition1 = cluster1Id;
       _edgeVectors[edgeIdx].transition2 = cluster2Id;
     }
-    utils::logmesg(lmp, "End of assignIdealLatticeVectorsToEdges() on rank {}\n", me);
+    debugLog(lmp, "End of assignIdealLatticeVectorsToEdges() on rank {}\n", me);
   }
 
   void FixDXA::write_per_rank_edges() const
   {
-    utils::logmesg(lmp, "Start of write_per_rank_edges() on rank {}\n", me);
+    debugLog(lmp, "Start of write_per_rank_edges() on rank {}\n", me);
 
     const std::string fname = fmt::format("edges_on_rank_{}.xyz", me);
     std::ofstream outFile(fname);
@@ -1883,7 +1895,7 @@ namespace FIXDXA_NS {
                              cluster.orientation.column(2)[0], cluster.orientation.column(2)[1],
                              cluster.orientation.column(2)[2]);
     }
-    utils::logmesg(lmp, "End of write_per_rank_edges() on rank {}\n", me);
+    debugLog(lmp, "End of write_per_rank_edges() on rank {}\n", me);
   }
 
   bool FixDXA::classifyElasticCompatible(size_t cell) const

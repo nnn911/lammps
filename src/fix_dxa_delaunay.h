@@ -30,8 +30,8 @@ namespace FIXDXA_NS {
 
       _dt = GEO::Delaunay::create(3, "BDEL");
       _dt->set_keeps_infinite(true);
-      _dt->set_stores_cicl(false);
-      // _dt->set_stores_cicl(true);
+      // required for next around vertex
+      _dt->set_stores_cicl(true);
       _dt->set_reorder(true);
       _init = true;
     }
@@ -48,7 +48,7 @@ namespace FIXDXA_NS {
 
       _dt->set_vertices(_nlocal + _nghost, points);
 
-      _setOwnership();
+      _setOwned();
       _setRequired();
 
       _validCells.clear();
@@ -104,10 +104,11 @@ namespace FIXDXA_NS {
     }
 
     bool cellIsRequired(size_t cell) const { return _requiredCells[cell]; }
+    bool vertexIsRequired(size_t vertex) const { return _requiredVertices[vertex]; }
 
     bool cellIsValid(size_t cell) const
     {
-      if (cell < numFiniteCells()) { return _validCells[cell]; }
+      if (cellIsFinite(cell)) { return _validCells[cell]; }
       return false;
     }
     void setCellIsValid(size_t cell, bool valid)
@@ -152,9 +153,29 @@ namespace FIXDXA_NS {
         }
         _requiredCells[cell] = isRequired;
       }
+
+      _requiredVertices.clear();
+      _requiredVertices.resize(numVertices(), false);
+      std::vector<bool> processed;
+      processed.resize(numVertices(), false);
+      for (size_t cell = 0; cell < numCells(); ++cell) {
+        for (size_t lv = 0; lv < 4; ++lv) {
+          int gv = cellVertex(cell, lv);
+          if (processed[gv]) { continue; }
+          processed[gv] = true;
+          _requiredVertices[gv] = _requiredCells[gv];
+          if (_requiredVertices[gv]) { continue; }
+
+          int incCell = _dt->next_around_vertex(cell, lv);
+          while (incCell != -1 && incCell != cell && !_requiredVertices[gv]) {
+            _requiredVertices[gv] = _requiredCells[incCell];
+            incCell = _dt->next_around_vertex(incCell, _dt->index(incCell, gv));
+          }
+        }
+      }
     }
 
-    void _setOwnership()
+    void _setOwned()
     {
       bool isOwned;
       _facetOwnership.resize(4 * numCells());
@@ -198,6 +219,8 @@ namespace FIXDXA_NS {
     // required cells are either owned or have a neighbor that is owned
     // all required cells need to be valid
     std::vector<bool> _requiredCells;
+    // Required atoms belong to a required cell
+    std::vector<bool> _requiredVertices;
   };
 
 }    // namespace FIXDXA_NS
