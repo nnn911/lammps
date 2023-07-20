@@ -30,6 +30,7 @@
 // early exit if there's no atom of the input structure type
 // avoid crash in distributing clusters to neighbors
 
+// debug macro based on discussion in: https://stackoverflow.com/a/1644898
 #define DEBUGLOG 1
 #define debugLog(lmp, string, ...)                            \
   do {                                                        \
@@ -163,8 +164,8 @@ namespace FIXDXA_NS {
     assignIdealLatticeVectorsToEdges();
 #ifndef NDEBUG
     write_per_rank_edges();
-    // classifyRegions();
-    // constructMesh();
+    classifyRegions();
+    constructMesh();
 #endif
   }
 
@@ -190,7 +191,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::setup(int)
   {
-    debugLog(lmp, "Fix DXA version {}\n", VERSION);
+    utils::logmesg(lmp, "Fix DXA version: {}\n", VERSION);
     end_of_step();
   }
 
@@ -2100,7 +2101,7 @@ namespace FIXDXA_NS {
     assert(triangles.size() % 3 == 0);
 
     const std::vector<size_t> order = argsort(remappedIdx);
-    assert(remappedIdx[order.size() - vertexCount] == 0);
+    assert(remappedIdx[order.size() - vertexCount - 1] == -1);
     const std::string fname = fmt::format("triangles_on_rank_{}.xyz", me);
     std::ofstream outFile(fname);
     if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
