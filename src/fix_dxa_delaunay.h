@@ -161,6 +161,7 @@ namespace FIXDXA_NS {
       for (size_t cell = 0; cell < numCells(); ++cell) {
         for (size_t lv = 0; lv < 4; ++lv) {
           int gv = cellVertex(cell, lv);
+          if (gv == -1) { continue; }
           if (processed[gv]) { continue; }
           processed[gv] = true;
           _requiredVertices[gv] = _requiredCells[gv];
