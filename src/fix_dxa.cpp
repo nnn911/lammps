@@ -151,8 +151,8 @@ namespace FIXDXA_NS {
     assignIdealLatticeVectorsToEdges();
 #ifndef NDEBUG
     write_per_rank_edges();
-    classifyRegions();
-    constructMesh();
+    // classifyRegions();
+    // constructMesh();
 #endif
   }
 
@@ -958,7 +958,7 @@ namespace FIXDXA_NS {
       if (_atomClusterType[ii] != INVALID) continue;
       if (_structureType[ii] == OTHER) continue;
       int clusterIndex = _clusterGraph.addCluster(atomTags[ii], _structureType[ii]);
-      int clusterId = _clusterGraph.clusters[clusterIndex].id;
+      int clusterId = _clusterGraph.getCluster(clusterIndex).id;
 
       _atomClusterType[ii] = clusterId;
       Matrix3d orientationV = Matrix3d::Zero();
@@ -1037,7 +1037,7 @@ namespace FIXDXA_NS {
         }
       }    // end of while loop
       assert(std::abs(orientationV.determinant()) > EPSILON);
-      _clusterGraph.clusters[clusterIndex].orientation = orientationW * orientationV.inverse();
+      _clusterGraph.setClusterOrientation(clusterIndex, orientationW * orientationV.inverse());
 #if 0
       const Matrix3d alignedOrientation = Matrix3d::Identity();
       if (_structureType[ii] == _inputStructure) {
@@ -1113,8 +1113,8 @@ namespace FIXDXA_NS {
 
       // Cluster of current atom
       if (_atomClusterType[currentAtom] == INVALID) { continue; }
+      assert(_clusterGraph.containsCluster(_atomClusterType[currentAtom]));
       size_t cluster1Index = _clusterGraph.findCluster(_atomClusterType[currentAtom]);
-      assert(cluster1Index < _clusterGraph.clusters.size());
 
       // Structure of the current atom
       const auto &crystalStructure = _crystalStructures[_structureType[currentAtom]];
@@ -1134,10 +1134,9 @@ namespace FIXDXA_NS {
         }
 
         // Skip if there is already a transition between the two clusters.
-        {
-          size_t clusterTransition = _clusterGraph.findClusterTransition(
-              _atomClusterType[currentAtom], _atomClusterType[neighIdx]);
-          if (clusterTransition != _clusterGraph.clusterTransitions.size()) { continue; }
+        if (_clusterGraph.containsTransition(_atomClusterType[currentAtom],
+                                             _atomClusterType[neighIdx])) {
+          continue;
         }
 
         // Find common neighbors of central and neighboring atom
@@ -1187,9 +1186,9 @@ namespace FIXDXA_NS {
       }
     }
 
-    utils::logmesg(lmp, "Clusters on rank {}: {}\n", me, _clusterGraph.clusters.size());
+    utils::logmesg(lmp, "Clusters on rank {}: {}\n", me, _clusterGraph.numClusters());
     utils::logmesg(lmp, "Clusters transitions on rank {}: {}\n", me,
-                   _clusterGraph.clusterTransitions.size());
+                   _clusterGraph.numTransitions());
 
     utils::logmesg(lmp, "End of connectClusters() on rank {}\n", me);
   }
@@ -1201,8 +1200,9 @@ namespace FIXDXA_NS {
     const std::string fname = fmt::format("cluster_transition_rank_{}.data", me);
     std::ofstream outFile(fname);
     if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
-    outFile << _clusterGraph.clusterTransitions.size() << '\n';
-    for (const auto &t : _clusterGraph.clusterTransitions) {
+    outFile << _clusterGraph.numTransitions() << '\n';
+    for (size_t i = 0; i < _clusterGraph.numTransitions(); ++i) {
+      const ClusterTransition &t = _clusterGraph.getTransition(i);
       outFile << fmt::format(
           "{} {} {} {} {} {} {} {} {} {} {}\n", t.cluster1, t.cluster2, t.transition.column(0)[0],
           t.transition.column(1)[0], t.transition.column(2)[0], t.transition.column(0)[1],
@@ -1219,7 +1219,7 @@ namespace FIXDXA_NS {
     int nprocs;
     MPI_Comm_size(world, &nprocs);
 
-    const int sbuf = _clusterGraph.clusterTransitions.size();
+    const int sbuf = _clusterGraph.numTransitions();
     std::vector<int> rbuf;
     rbuf.resize(nprocs);
     MPI_Allgather(&sbuf, 1, MPI_INT, rbuf.data(), 1, MPI_INT, world);
@@ -1236,13 +1236,14 @@ namespace FIXDXA_NS {
 
     std::vector<double> outbuf;
     if (me == 0) {
-      outbuf.reserve(entriesPerTransition * _clusterGraph.clusterTransitions.size() + 1);
+      outbuf.reserve(entriesPerTransition * _clusterGraph.numTransitions() + 1);
       int totalTransitionCount = std::accumulate(rbuf.begin(), rbuf.end(), (int) 0);
       outbuf.push_back(ubuf(totalTransitionCount).d);
     } else {
-      outbuf.reserve(entriesPerTransition * _clusterGraph.clusterTransitions.size());
+      outbuf.reserve(entriesPerTransition * _clusterGraph.numTransitions());
     }
-    for (const auto &t : _clusterGraph.clusterTransitions) {
+    for (size_t i = 0; i < _clusterGraph.numTransitions(); ++i) {
+      const ClusterTransition &t = _clusterGraph.getTransition(i);
       outbuf.push_back(ubuf(t.cluster1).d);
       outbuf.push_back(ubuf(t.cluster2).d);
       for (size_t i = 0; i < 3; ++i) {
@@ -1591,12 +1592,13 @@ namespace FIXDXA_NS {
     size_t a, b;
     size_t idx = 0;
     Edge newEdge;
-    // TODO: Find a good estimate
+    // TODO: Find something cache friendly
     std::set<Edge> edgesSet;
 
-    for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
+    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+      if (!_dt.cellIsRequired(cell)) { continue; }
       for (size_t facet = 0; facet < 4; ++facet) {
-        if (!_dt.facetIsOwned(cell, facet)) { continue; }
+        // if (!_dt.facetIsOwned(cell, facet)) { continue; }
         assert(_dt.cellIsValid(cell));
         for (size_t e = 0; e < 3; ++e) {
           // edge from a -> b
@@ -1871,18 +1873,15 @@ namespace FIXDXA_NS {
                              _edgeVectors[i].vector[2], _edgeVectors[i].transition1,
                              _edgeVectors[i].transition2);
     }
-    outFile << _clusterGraph.clusters.size() << " clusters\n";
-    for (size_t i = 0; i < _clusterGraph.clusters.size(); ++i) {
-      outFile << fmt::format("{} {} {} {} {} {} {} {} {} {}\n", _clusterGraph.clusters[i].id,
-                             _clusterGraph.clusters[i].orientation.column(0)[0],
-                             _clusterGraph.clusters[i].orientation.column(0)[1],
-                             _clusterGraph.clusters[i].orientation.column(0)[2],
-                             _clusterGraph.clusters[i].orientation.column(1)[0],
-                             _clusterGraph.clusters[i].orientation.column(1)[1],
-                             _clusterGraph.clusters[i].orientation.column(1)[2],
-                             _clusterGraph.clusters[i].orientation.column(2)[0],
-                             _clusterGraph.clusters[i].orientation.column(2)[1],
-                             _clusterGraph.clusters[i].orientation.column(2)[2]);
+    outFile << _clusterGraph.numClusters() << " clusters\n";
+    for (size_t i = 0; i < _clusterGraph.numClusters(); ++i) {
+      const Cluster &cluster = _clusterGraph.getCluster(i);
+      outFile << fmt::format("{} {} {} {} {} {} {} {} {} {}\n", cluster.id,
+                             cluster.orientation.column(0)[0], cluster.orientation.column(0)[1],
+                             cluster.orientation.column(0)[2], cluster.orientation.column(1)[0],
+                             cluster.orientation.column(1)[1], cluster.orientation.column(1)[2],
+                             cluster.orientation.column(2)[0], cluster.orientation.column(2)[1],
+                             cluster.orientation.column(2)[2]);
     }
     utils::logmesg(lmp, "End of write_per_rank_edges() on rank {}\n", me);
   }
@@ -2048,17 +2047,59 @@ namespace FIXDXA_NS {
     }
   }
 
-  void FixDXA::constructMesh()
+  template <typename T> static std::vector<size_t> argsort(const std::vector<T> &arr)
+  {
+    std::vector<size_t> idx(arr.size());
+    std::iota(idx.begin(), idx.end(), 0);
+    std::stable_sort(idx.begin(), idx.end(), [&arr](int left, int right) {
+      return arr[left] < arr[right];
+    });
+    return idx;
+  }
+
+  void FixDXA::constructMesh() const
   {
     assert(_regions.size() == _dt.numCells());
+    std::vector<int> remappedIdx;
+    remappedIdx.resize(atom->nlocal + atom->nghost, -1);
+    std::vector<int> triangles;
+    // Todo: good heuristic
+    triangles.reserve(std::count_if(_structureType.begin(), _structureType.begin() + atom->nlocal,
+                                    [](StructureType s) {
+                                      return s == OTHER;
+                                    }));
+    int vertexCount = 0;
     for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
       if (!_dt.cellIsOwned(cell)) { continue; }
       assert(_regions[cell] != -3);
-      for (size_t facet = 4; facet < 4; ++facet) {
+      for (int facet = 4; facet < 4; ++facet) {
+        if (!_dt.facetIsOwned(cell, facet)) { continue; }
         int oppositeCell = _dt.oppositeCell(cell, facet);
         assert(oppositeCell != -1);
         assert(_regions[oppositeCell] != -3);
+        if (_regions[cell] == _regions[oppositeCell]) { continue; }
+        for (int vert = 0; vert < 3; ++vert) {
+          int vertexIndex = _dt.facetVertex(cell, facet, vert);
+          if (remappedIdx[vertexIndex] == -1) { remappedIdx[vertexIndex] = vertexCount++; }
+          triangles.push_back(remappedIdx[vertexIndex]);
+        }
       }
+    }
+    assert(triangles.size() % 3 == 0);
+
+    const std::vector<size_t> order = argsort(remappedIdx);
+    assert(remappedIdx[order.size() - vertexCount] == 0);
+    const std::string fname = fmt::format("triangles_on_rank_{}.xyz", me);
+    std::ofstream outFile(fname);
+    if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
+    outFile << "DXA debug topology file\n" << vertexCount << '\n';
+    for (size_t i = order.size() - vertexCount; i < order.size(); ++i) {
+      int idx = remappedIdx[i];
+      outFile << fmt::format("{} {} {}\n", atom->x[idx][0], atom->x[idx][1], atom->x[idx][2]);
+    }
+    outFile << triangles.size() << " triangles\n";
+    for (size_t i = 0; i < triangles.size(); i += 3) {
+      outFile << fmt::format("{} {} {}\n", triangles[i], triangles[i + 1], triangles[i + 2]);
     }
   }
 

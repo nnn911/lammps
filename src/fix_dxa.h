@@ -227,47 +227,77 @@ namespace FIXDXA_NS {
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   // CLUSTERGRAPH
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-  struct ClusterGraph {
+  class ClusterGraph {
+   public:
     ClusterGraph() = default;
     explicit ClusterGraph(size_t n) { reserve(n); }
 
+    void reserve(size_t n)
+    {
+      _clusters.reserve(n);
+      _transitions.reserve(2 * n);
+    }
+
     int addCluster(tagint id, StructureType structureType)
     {
-      clusters.emplace_back(id, structureType);
-      return clusters.size() - 1;
+      _clusters.emplace_back(id, structureType);
+      return _clusters.size() - 1;
     }
 
     int addClusterTransition(tagint cluster1, tagint cluster2,
                              const Matrix3d &transition = Matrix3d::Identity())
     {
-      clusterTransitions.emplace_back(cluster1, cluster2, transition);
-      clusterTransitions.emplace_back(cluster2, cluster1, transition.inverse());
-      return clusters.size() - 1;
+      _transitions.emplace_back(cluster1, cluster2, transition);
+      _transitions.emplace_back(cluster2, cluster1, transition.inverse());
+      return _clusters.size() - 1;
     }
 
-    void reserve(size_t n)
+    size_t numClusters() const { return _clusters.size(); }
+    size_t numTransitions() const { return _transitions.size(); }
+
+    const Cluster &getCluster(size_t index) const
     {
-      clusters.reserve(n);
-      clusterTransitions.reserve(2 * n);
+      assert(index < _clusters.size());
+      return _clusters[index];
+    }
+
+    void setClusterOrientation(size_t index, const Matrix3d &orientation)
+    {
+      assert(index < _clusters.size());
+      _clusters[index].orientation = orientation;
+    }
+
+    bool containsCluster(tagint clusterId) const
+    {
+      return findCluster(clusterId) < _clusters.size();
     }
 
     size_t findCluster(tagint clusterId) const
     {
-      for (size_t i = 0; i < clusters.size(); ++i) {
-        if (clusters[i].id == clusterId) { return i; }
+      for (size_t i = 0; i < _clusters.size(); ++i) {
+        if (_clusters[i].id == clusterId) { return i; }
       }
-      return clusters.size();
+      return _clusters.size();
+    }
+    bool containsTransition(tagint clusterId1, tagint clusterId2) const
+    {
+      return findTransition(clusterId1, clusterId2) < _transitions.size();
     }
 
-    size_t findClusterTransition(tagint clusterId1, tagint clusterId2) const
+    size_t findTransition(tagint clusterId1, tagint clusterId2) const
     {
-      for (size_t i = 0; i < clusterTransitions.size(); ++i) {
-        if ((clusterTransitions[i].cluster1 == clusterId1) &&
-            (clusterTransitions[i].cluster2 == clusterId2)) {
+      for (size_t i = 0; i < _transitions.size(); ++i) {
+        if ((_transitions[i].cluster1 == clusterId1) && (_transitions[i].cluster2 == clusterId2)) {
           return i;
         }
       }
-      return clusterTransitions.size();
+      return _transitions.size();
+    }
+
+    const ClusterTransition &getTransition(size_t index) const
+    {
+      assert(index < _transitions.size());
+      return _transitions[index];
     }
 
     // TODO: make this return a reference
@@ -275,29 +305,24 @@ namespace FIXDXA_NS {
     Matrix3d getTransitionMatrix(tagint clusterId1, tagint clusterId2) const
     {
       if (clusterId1 == clusterId2) { return Matrix3d::Identity(); }
-      const size_t pos = findClusterTransition(clusterId1, clusterId2);
-      return clusterTransitions[pos].transition;
+      const size_t pos = findTransition(clusterId1, clusterId2);
+      return _transitions[pos].transition;
     }
     // TODO: make this return a reference
     // -> make identity matrix static or member if this!
     Matrix3d getReverseTransitionMatrix(tagint clusterId1, tagint clusterId2) const
     {
       if (clusterId1 == clusterId2) { return Matrix3d::Identity(); }
-      const size_t pos = findClusterTransition(clusterId2, clusterId1);
-      return clusterTransitions[pos].transition;
-    }
-
-    bool containsTransition(tagint clusterId1, tagint clusterId2) const
-    {
-      return findClusterTransition(clusterId1, clusterId2) < clusterTransitions.size();
+      const size_t pos = findTransition(clusterId2, clusterId1);
+      return _transitions[pos].transition;
     }
 
     Vector3d applyTransition(tagint clusterId1, tagint clusterId2, const Vector3d &vector) const
     {
       if (clusterId1 == clusterId2) { return vector; }
-      size_t transition = findClusterTransition(clusterId1, clusterId2);
-      assert(transition < clusterTransitions.size());
-      return clusterTransitions[transition].transition * vector;
+      size_t transition = findTransition(clusterId1, clusterId2);
+      assert(transition < _transitions.size());
+      return _transitions[transition].transition * vector;
     }
 
     Vector3d applyReverseTransition(tagint clusterId1, tagint clusterId2,
@@ -306,8 +331,9 @@ namespace FIXDXA_NS {
       return applyTransition(clusterId2, clusterId1, vector);
     }
 
-    std::vector<Cluster> clusters;
-    std::vector<ClusterTransition> clusterTransitions;
+   private:
+    std::vector<Cluster> _clusters;
+    std::vector<ClusterTransition> _transitions;
   };
 
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -380,7 +406,7 @@ namespace FIXDXA_NS {
     bool classifyElasticCompatible(size_t) const;
     int classifyCell(size_t) const;
     void classifyRegions();
-    void constructMesh();
+    void constructMesh() const;
 
    private:
     static constexpr size_t _maxNeighCount = 16;
