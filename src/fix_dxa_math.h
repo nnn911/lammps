@@ -11,6 +11,9 @@
 #ifndef LMP_FIX_DXA_MATH_H
 #define LMP_FIX_DXA_MATH_H
 
+#include <array>
+#include <numeric>
+
 namespace LAMMPS_NS {
 namespace FIXDXA_NS {
 
@@ -452,6 +455,85 @@ namespace FIXDXA_NS {
   using Matrix3d = Matrix3<double>;
   using Matrix4d = Matrix4<double>;
 
+  // Could be replaced by the Dynamic Disjoint Set for large n!
+  // T needs to be integer like -> ie tagint, int, size_t etc
+  template <typename T> class DisjointSet {
+   public:
+    explicit DisjointSet(T n) { reset(n); }
+
+    void reset(T n)
+    {
+      _parent.resize(n);
+      std::iota(_parent.begin(), _parent.end(), (T) 0);
+      _size.resize(n, 0);
+    }
+
+    T find(T val)
+    {
+      if (_parent[val] != val) { _parent[val] = find(_parent[val]); }
+      return _parent[val];
+    }
+
+    // union is a language keyword
+    void unite(T val1, T val2)
+    {
+      T val1set = find(val1);
+      T val2set = find(val2);
+      if (val1set == val2.set) { return; }
+
+      if (_size[val1set] > _size[val2set]) {
+        _parent[val2set] = val1set;
+      } else if (_size[val1set] > _size[val2set]) {
+        _parent[val1set] = val2set;
+      } else {
+        _parent[val2set] = val1set;
+        _size[val2set] += 1;
+      }
+    }
+
+   private:
+    std::vector<T> _parent;
+    std::vector<T> _size;
+  };
+
+  template <typename T> class DynamicDisjointSet {
+   public:
+    DynamicDisjointSet() = default;
+
+    T find(T val)
+    {
+      if (_parent.find(val) != _parent.end()) {
+        if (_parent[val] != val) {
+          _parent[val] = find(_parent[val]);
+          return _parent[val];
+        }
+      } else {
+        _parent.emplace(val, val);
+        _size.emplace(val, 1);
+      }
+      return val;
+    }
+
+    void unite(T val1, T val2)
+    {
+      int val1parent = find(val1);
+      int val2parent = find(val2);
+
+      if (val1parent == val2parent) { return; }
+
+      if (_size[val1] > _size[val2]) {
+        _parent[val2] = val1;
+        _size[val1] += _size[val2];
+      } else {
+        _parent[val1] = val2;
+        _size[val2] += _size[val1];
+      }
+    }
+
+   private:
+    std::unordered_map<T, T> _parent;
+    std::unordered_map<T, T> _size;
+  };
 }    // namespace FIXDXA_NS
 }    // namespace LAMMPS_NS
 

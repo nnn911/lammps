@@ -224,6 +224,7 @@ namespace FIXDXA_NS {
           (transition.equals(rhs.transition, TRANSITION_MATRIX_EPSILON));
     }
   };
+
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   // CLUSTERGRAPH
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -249,11 +250,103 @@ namespace FIXDXA_NS {
     {
       _transitions.emplace_back(cluster1, cluster2, transition);
       _transitions.emplace_back(cluster2, cluster1, transition.inverse());
-      return _clusters.size() - 1;
+      _disconnected.clear();
+      return _clusters.size() - 2;
     }
 
-    size_t numClusters() const { return _clusters.size(); }
-    size_t numTransitions() const { return _transitions.size(); }
+    bool clustersAreDisconnected(tagint cluster1Id, tagint cluster2Id) const
+    {
+      return std::find(_disconnected.begin(), _disconnected.end(),
+                       std::pair<tagint, tagint>{cluster1Id, cluster2Id}) != _disconnected.end();
+    }
+
+    struct Node {
+      size_t clusterIdx;
+      size_t parent;
+      int length;
+      Node(size_t clusterIdx, size_t parent, int length) :
+          clusterIdx{clusterIdx}, parent{parent}, length{length}
+      {
+      }
+      bool operator==(const Node &other) const { return other.clusterIdx == clusterIdx; }
+      bool operator==(const size_t &other) const { return other == clusterIdx; }
+    };
+    // generates a cluster transition from 2 distant clusters in the cluster graph
+    // breadth first search of the cluster graph
+    size_t determineClusterTransition(tagint cluster1Id, tagint cluster2Id)
+    {
+      // Check if transition already exists
+      {
+        int idx = findTransition(cluster1Id, cluster2Id);
+        if (idx < _transitions.size()) { return idx; }
+      }
+      // Check if clusters are already labeled as disconnected
+      {
+        if (clustersAreDisconnected(cluster1Id, cluster2Id)) {
+          return std::numeric_limits<size_t>::max();
+        }
+      }
+
+      // try connecting the clusters
+      constexpr int numSteps = 4;
+
+      std::deque<Node> queue;
+      std::vector<Node> visited;
+      visited.reserve(std::min((size_t) 100, numClusters()));
+      queue.emplace_back(findCluster(cluster1Id), 0, 0);
+      visited.emplace_back(queue.front());
+
+      Node neighNode{0, 0, 0};
+      while (!queue.empty()) {
+        const Node &currentNode = queue.front();
+        const Cluster &cluster = _clusters[currentNode.clusterIdx];
+
+        // TODO search sorted
+        for (const auto &t : _transitions) {
+          if (t.cluster1 != cluster.id) { continue; }
+
+          neighNode.clusterIdx = findCluster(t.cluster2);
+          neighNode.parent = currentNode.clusterIdx;
+          neighNode.length = currentNode.length + 1;
+
+          // we found a path
+          if (t.cluster2 == cluster2Id) { break; }
+
+          if (neighNode.length < numSteps &&
+              std::find(visited.begin(), visited.end(), neighNode) == visited.end()) {
+            queue.push_back(neighNode);
+            visited.push_back(neighNode);
+          }
+        }
+
+        // retrace path
+        if (_clusters[neighNode.clusterIdx].id == cluster2Id) {
+          const Node *parent = nullptr;
+          const Node *child = &neighNode;
+          Matrix3d transition = Matrix3d::Identity();
+          do {
+            auto pos = std::find(visited.begin(), visited.end(), child->parent);
+            assert(pos != visited.end());
+            parent = &(*pos);
+            transition = transition *
+                getTransitionMatrix(_clusters[parent->clusterIdx].id,
+                                    _clusters[child->clusterIdx].id);
+            child = parent;
+          } while (_clusters[parent->clusterIdx].id != cluster1Id);
+          return addClusterTransition(cluster1Id, cluster2Id, transition);
+        }
+
+        queue.pop_front();
+      }
+
+      // no transition was found
+      _disconnected.emplace_back(cluster1Id, cluster2Id);
+      _disconnected.emplace_back(cluster2Id, cluster1Id);
+      return std::numeric_limits<size_t>::max();
+    }
+
+    [[nodiscard]] size_t numClusters() const { return _clusters.size(); }
+    [[nodiscard]] size_t numTransitions() const { return _transitions.size(); }
 
     const Cluster &getCluster(size_t index) const
     {
@@ -281,6 +374,7 @@ namespace FIXDXA_NS {
     }
     bool containsTransition(tagint clusterId1, tagint clusterId2) const
     {
+      if (clusterId1 == clusterId2) { return true; }
       return findTransition(clusterId1, clusterId2) < _transitions.size();
     }
 
@@ -321,6 +415,10 @@ namespace FIXDXA_NS {
     {
       if (clusterId1 == clusterId2) { return vector; }
       size_t transition = findTransition(clusterId1, clusterId2);
+      if (transition >= _transitions.size()) {
+        std::cerr << fmt::format("ERROR: {} {}\n", clusterId1, clusterId2);
+      }
+
       assert(transition < _transitions.size());
       return _transitions[transition].transition * vector;
     }
@@ -331,9 +429,18 @@ namespace FIXDXA_NS {
       return applyTransition(clusterId2, clusterId1, vector);
     }
 
+    // TODO: DynamicDisjointSet vs DisjointSet
+    DynamicDisjointSet<tagint> getDynamicDisjointSet() const
+    {
+      DynamicDisjointSet<tagint> ds;
+      for (const auto &t : _transitions) { ds.unite(t.cluster1, t.cluster2); }
+      return ds;
+    }
+
    private:
     std::vector<Cluster> _clusters;
     std::vector<ClusterTransition> _transitions;
+    std::vector<std::pair<tagint, tagint>> _disconnected;
   };
 
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -400,7 +507,7 @@ namespace FIXDXA_NS {
     void write_per_rank_edges() const;
     void buildEdges();
     void assignIdealLatticeVectorsToEdges();
-    std::pair<Vector3d, int> findPath(size_t, size_t, int) const;
+    std::pair<Vector3d, int> findPath(const size_t, const size_t, const char);
 
     // Check dislocation cells
     bool classifyElasticCompatible(size_t) const;
@@ -462,9 +569,9 @@ namespace FIXDXA_NS {
     std::vector<Edge> _edges;
 
     struct EdgeVector {
-      Vector3d vector;
-      size_t transition1;
-      size_t transition2;
+      Vector3d vector{0, 0, 0};
+      size_t transition1 = 0;
+      size_t transition2 = 0;
     };
 
     std::vector<EdgeVector> _edgeVectors;

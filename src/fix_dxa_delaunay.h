@@ -32,6 +32,7 @@ namespace FIXDXA_NS {
       _dt->set_keeps_infinite(true);
       // required for next around vertex
       _dt->set_stores_cicl(true);
+      _dt->set_stores_neighbors(true);
       _dt->set_reorder(true);
       _init = true;
     }
@@ -62,7 +63,12 @@ namespace FIXDXA_NS {
     size_t numCells() const { return _dt->nb_cells(); };
     size_t numFiniteCells() const { return _dt->nb_finite_cells(); };
     size_t numVertices() const { return _dt->nb_vertices(); };
-    // size_t numOwnedCells() const { return _numOwnedCells; };
+    size_t numOwnedCells() const
+    {
+      size_t count = 0;
+      for (size_t cell = 0; cell < numCells(); ++cell) { count += cellIsOwned(cell); }
+      return count;
+    };
     size_t numOwnedFacets() const { return _numOwnedFacets; };
 
     // takes a local facet index [0,4) and a local index around that facet [0,3) and returns the
@@ -214,7 +220,13 @@ namespace FIXDXA_NS {
     size_t _nghost;
     GEO::Delaunay *_dt = nullptr;
     const tagint *_tags = nullptr;
-    static constexpr size_t _facetMap[4][3] = {{0, 1, 2}, {1, 3, 2}, {0, 2, 3}, {0, 3, 1}};
+    static constexpr size_t _facetMap[4][3] = {
+        {1, 3, 2},
+        {0, 2, 3},
+        {0, 3, 1},
+        {0, 1, 2},
+    };
+    // static constexpr size_t _facetMap[4][3] = {{0, 1, 2}, {1, 3, 2}, {0, 2, 3}, {0, 3, 1}};
     std::vector<bool> _facetOwnership;
     std::vector<bool> _validCells;
     // required cells are either owned or have a neighbor that is owned
