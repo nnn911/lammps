@@ -170,7 +170,7 @@ namespace FIXDXA_NS {
           if (gv == -1) { continue; }
           if (processed[gv]) { continue; }
           processed[gv] = true;
-          _requiredVertices[gv] = _requiredCells[gv];
+          _requiredVertices[gv] = _requiredCells[cell];
           if (_requiredVertices[gv]) { continue; }
 
           int incCell = _dt->next_around_vertex(cell, lv);

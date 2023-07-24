@@ -140,17 +140,18 @@ namespace FIXDXA_NS {
   {
     // Structure Identification
     identifyCrystalStructure();
-    buildClusters();
-    for (int i = 0; i < atom->nlocal; ++i) {
-      _output[i][0] = static_cast<double>(static_cast<int>(_structureType[i]));
-      _output[i][1] = static_cast<double>(_atomClusterType[i]);
-    }
-    array_atom = _output;
-    connectClusters();
-#ifndef NDEBUG
-    write_cluster_transitions();
-    write_cluster_transitions_parallel();
-#endif
+    // buildClusters();
+    // for (int i = 0; i < atom->nlocal; ++i) {
+    //   _output[i][0] = static_cast<double>(static_cast<int>(_structureType[i]));
+    //   _output[i][1] = static_cast<double>(_atomClusterType[i]);
+    // }
+    // array_atom = _output;
+
+    // connectClusters();
+    // #ifndef NDEBUG
+    // write_cluster_transitions();
+    // write_cluster_transitions_parallel();
+    // #endif
 
     // Tessellation
     firstTessllation();
@@ -159,6 +160,20 @@ namespace FIXDXA_NS {
     write_tessellation_parallel();
     write_per_rank_tessellation();
 #endif
+
+    buildClustersPostTess();
+    for (int i = 0; i < atom->nlocal; ++i) {
+      _output[i][0] = static_cast<double>(static_cast<int>(_structureType[i]));
+      _output[i][1] = static_cast<double>(_atomClusterType[i]);
+    }
+    array_atom = _output;
+
+    connectClustersPostTess();
+#ifndef NDEBUG
+    write_cluster_transitions();
+    write_cluster_transitions_parallel();
+#endif
+
     buildEdges();
     updateClustersFromNeighbors();
     assignIdealLatticeVectorsToEdges();
@@ -1104,6 +1119,160 @@ namespace FIXDXA_NS {
     debugLog(lmp, "End of buildClusters() on rank {}\n", me);
   }
 
+  void FixDXA::buildClustersPostTess()
+  {
+    debugLog(lmp, "Start of buildClustersPostTess() on rank {}\n", me);
+
+    tagint *atomTags = atom->tag;
+    double **x = atom->x;
+
+    _atomClusterType.resize(atom->nmax);
+
+    std::fill(_atomClusterType.begin(), _atomClusterType.end(), INVALID);
+
+    _atomSymmetryPermutations.resize(atom->nmax);
+    std::fill(_atomSymmetryPermutations.begin(), _atomSymmetryPermutations.end(), 0);
+
+    std::deque<int> atomQueue{};
+    int ntotal = atom->nlocal + atom->nghost;
+    for (int ii = 0; ii < ntotal; ++ii) {
+      if (!_dt.vertexIsRequired(ii)) { continue; }
+      if (_atomClusterType[ii] != INVALID) continue;
+      if (_structureType[ii] == OTHER) continue;
+      int clusterIndex = _clusterGraph.addCluster(atomTags[ii], _structureType[ii]);
+      int clusterId = _clusterGraph.getCluster(clusterIndex).id;
+
+      _atomClusterType[ii] = clusterId;
+      Matrix3d orientationV = Matrix3d::Zero();
+      Matrix3d orientationW = Matrix3d::Zero();
+      const auto &crystalStructure = _crystalStructures[_structureType[ii]];
+
+      atomQueue.clear();
+      atomQueue.push_back(ii);
+      while (!atomQueue.empty()) {
+        int currentAtom = atomQueue.front();
+        atomQueue.pop_front();
+        const int symmetryPermutation = _atomSymmetryPermutations[currentAtom];
+        const auto &permutation = crystalStructure.permutations[symmetryPermutation].permutation;
+
+        const Vector3d iiPosition = xToVector(x[currentAtom]);
+        for (int jj = 0; jj < _neighCount; ++jj) {
+
+          // TODO: HERE we might be able to skip all ghost atoms -> because we don't need their orientation etc. It will be replaced in the comm step!
+
+          const int neighIdx = _neighborIndices[currentAtom][jj];
+          assert(neighIdx != -1);
+          const Vector3d &latticeVector = crystalStructure.latticeVectors[permutation[jj]];
+          Vector3d spatialVector = xToVector(x[neighIdx]) - iiPosition;
+          for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+              orientationV(i, j) += (latticeVector[j] * latticeVector[i]);
+              orientationW(i, j) += (latticeVector[j] * spatialVector[i]);
+            }
+          }
+
+          if (_atomClusterType[neighIdx] != INVALID) { continue; }
+          if (_structureType[neighIdx] != _inputStructure) { continue; }
+
+          Matrix3d tm1, tm2;
+          bool overlap = true;
+          for (int i = 0; i < 3; i++) {
+            int atomIndex;
+            if (i != 2) {
+              atomIndex = _neighborIndices[currentAtom][crystalStructure.commonNeighbors[jj][i]];
+              assert(atomIndex != -1);
+              tm1.column(i) =
+                  crystalStructure
+                      .latticeVectors[permutation[crystalStructure.commonNeighbors[jj][i]]] -
+                  crystalStructure.latticeVectors[permutation[jj]];
+            } else {
+              atomIndex = currentAtom;
+              tm1.column(i) = -crystalStructure.latticeVectors[permutation[jj]];
+            }
+            auto pos = std::find(_neighborIndices[neighIdx].begin(),
+                                 _neighborIndices[neighIdx].begin() + _neighCount, atomIndex);
+            if (*pos != atomIndex) {
+              overlap = false;
+              break;
+            }
+            auto d = std::distance(_neighborIndices[neighIdx].begin(), pos);
+            assert(d < _neighCount);
+            tm2.column(i) = crystalStructure.latticeVectors[d];
+          }
+          if (!overlap) { continue; }
+          // return;
+          assert(tm1.invertible());
+          Matrix3d tm2inverse;
+          if (!tm2.inverse(tm2inverse)) { continue; }
+          Matrix3d transition = tm1 * tm2inverse;
+
+          for (int i = 0; i < crystalStructure.permutations.size(); ++i) {
+            if (transition.equals(crystalStructure.permutations[i].transformation,
+                                  TRANSITION_MATRIX_EPSILON)) {
+              assert(_atomClusterType[ii] == _atomClusterType[currentAtom]);
+              _atomClusterType[neighIdx] = _atomClusterType[ii];
+              _atomSymmetryPermutations[neighIdx] = i;
+              if (_dt.vertexIsRequired(neighIdx)) { atomQueue.push_back(neighIdx); }
+              break;
+            }
+          }
+        }
+      }    // end of while loop
+      assert(std::abs(orientationV.determinant()) > EPSILON);
+      _clusterGraph.setClusterOrientation(clusterIndex, orientationW * orientationV.inverse());
+#if 0
+      const Matrix3d alignedOrientation = Matrix3d::Identity();
+      if (_structureType[ii] == _inputStructure) {
+        Cluster &currentCluster = _clusterGraph.clusters[clusterIndex];
+        double bestDeviation = std::numeric_limits<double>::max();
+        const Matrix3d &originalOrientation = _clusterGraph.clusters[clusterIndex].orientation;
+        for (size_t symPermIdx = 0; symPermIdx < crystalStructure.permutations.size();
+             ++symPermIdx) {
+          const Matrix3d &symmetryTMatrix =
+              crystalStructure.permutations[symPermIdx].transformation;
+          const Matrix3d newOrientation = originalOrientation * symmetryTMatrix.inverse();
+          const double scaling = std::cbrt(std::abs(newOrientation.determinant()));
+          double deviation = 0;
+          for (size_t i = 0; i < 3; i++) {
+            for (size_t j = 0; j < 3; j++) {
+              deviation += std::abs(newOrientation(i, j) / scaling - alignedOrientation(i, j));
+            }
+          }
+          if (deviation < bestDeviation) {
+            bestDeviation = deviation;
+            currentCluster.symmetryPermutationIndex = symPermIdx;
+            currentCluster.orientation = newOrientation;
+          }
+          if (bestDeviation == 0) { break; }
+        }
+      }
+#endif
+    }    // end of for loop
+#if 0
+    for (int ii = 0; ii < atom->nlocal; ++ii) {
+      const int cluster = _atomClusterType[ii];
+      if (cluster == 0) { continue; }
+      const int clusterIdx = _clusterGraph.findCluster(cluster);
+      assert(clusterIdx < _clusterGraph.clusters.size());
+
+      Cluster &currentCluster = _clusterGraph.clusters[clusterIdx];
+      if (currentCluster.symmetryPermutationIndex == 0) { continue; }
+
+      const auto &crystalStructure = _crystalStructures[currentCluster.structure];
+      int oldSymmetryPermutation = _atomSymmetryPermutations[ii];
+      int newSymmetryPermutation = crystalStructure.permutations[oldSymmetryPermutation]
+                                       .inverseProduct[currentCluster.symmetryPermutationIndex];
+      _atomSymmetryPermutations[ii] = newSymmetryPermutation;
+    }
+#endif
+
+    _commStep = CLUSTER;
+    comm->forward_comm(this, 2);
+    _commStep = NOCOM;
+
+    debugLog(lmp, "End of buildClustersPostTess() on rank {}\n", me);
+  }
+
   bool FixDXA::addNeighborIndex(int neighListIndex, int indexToAdd)
   {
     for (size_t i = 0; i < _neighCount; ++i) {
@@ -1203,6 +1372,101 @@ namespace FIXDXA_NS {
     debugLog(lmp, "Clusters transitions on rank {}: {}\n", me, _clusterGraph.numTransitions());
 
     debugLog(lmp, "End of connectClusters() on rank {}\n", me);
+  }
+
+  void FixDXA::connectClustersPostTess()
+  {
+    debugLog(lmp, "Start of connectClustersPostTess() on rank {}\n", me);
+    tagint *atomTags = atom->tag;
+
+    int ntotal = atom->nlocal + atom->nghost;
+    for (int currentAtom = 0; currentAtom < ntotal; ++currentAtom) {
+      if (!_dt.vertexIsRequired(currentAtom)) { continue; }
+      // for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+      // if (!_dt.cellIsRequired(cell)) { continue; }
+      // for (size_t vert = 0; vert < 4; ++vert) {
+      // int currentAtom = _dt.cellVertex(cell, vert);
+      auto atomTag = atomTags[currentAtom];
+
+      // Cluster of current atom
+      if (_atomClusterType[currentAtom] == INVALID) { continue; }
+      // assert(_clusterGraph.containsCluster(_atomClusterType[currentAtom]));
+
+      // Structure of the current atom
+      const auto &crystalStructure = _crystalStructures[_structureType[currentAtom]];
+      const auto &permutation =
+          crystalStructure.permutations[_atomSymmetryPermutations[currentAtom]].permutation;
+
+      // Visit neighbors of the current atom.
+      for (int jj = 0; jj < _neighCount; ++jj) {
+        const int neighIdx = _neighborIndices[currentAtom][jj];
+        assert(neighIdx != -1);
+
+        // Skip neighbor atoms belonging to the same cluster or to no cluster at all.
+        if (_atomClusterType[neighIdx] == INVALID ||
+            _atomClusterType[currentAtom] == _atomClusterType[neighIdx]) {
+          bool success = addNeighborIndex(neighIdx, currentAtom);
+          continue;
+        }
+
+        // Skip if there is already a transition between the two clusters.
+        if (_clusterGraph.containsTransition(_atomClusterType[currentAtom],
+                                             _atomClusterType[neighIdx])) {
+          continue;
+        }
+
+        // Find common neighbors of central and neighboring atom
+        Matrix3d tm1, tm2;
+        bool overlap = true;
+        for (int i = 0; i < 3; i++) {
+          int atomIndex;
+          if (i != 2) {
+            atomIndex = _neighborIndices[currentAtom][crystalStructure.commonNeighbors[jj][i]];
+            assert(atomIndex != -1);
+            tm1.column(i) =
+                crystalStructure
+                    .latticeVectors[permutation[crystalStructure.commonNeighbors[jj][i]]] -
+                crystalStructure.latticeVectors[permutation[jj]];
+          } else {
+            atomIndex = currentAtom;
+            tm1.column(i) = -crystalStructure.latticeVectors[permutation[jj]];
+          }
+          auto pos = std::find(_neighborIndices[neighIdx].begin(),
+                               _neighborIndices[neighIdx].begin() + _neighCount, atomIndex);
+          if (*pos != atomIndex) {
+            overlap = false;
+            break;
+          }
+          auto d = std::distance(_neighborIndices[neighIdx].begin(), pos);
+          assert(d < _neighCount);
+
+          // Look up symmetry permutation of neighbor atom.
+          const auto &neighCrystalStructure = _crystalStructures[_structureType[neighIdx]];
+          const auto &neighPermutation =
+              neighCrystalStructure.permutations[_atomSymmetryPermutations[neighIdx]].permutation;
+
+          tm2.column(i) = neighCrystalStructure.latticeVectors[neighPermutation[d]];
+        }
+        if (!overlap) { continue; }
+
+        assert(tm1.invertible());
+        Matrix3d tm1inverse;
+        // !TODO! This shoud never be a continue!
+        if (!tm1.inverse(tm1inverse)) { continue; }
+        Matrix3d transition = tm2 * tm1inverse;
+
+        if (transition.isOrthogonal(EPSILON)) {
+          _clusterGraph.addClusterTransition(_atomClusterType[currentAtom],
+                                             _atomClusterType[neighIdx], transition);
+        }
+      }
+    }
+    // }
+
+    debugLog(lmp, "Clusters on rank {}: {}\n", me, _clusterGraph.numClusters());
+    debugLog(lmp, "Clusters transitions on rank {}: {}\n", me, _clusterGraph.numTransitions());
+
+    debugLog(lmp, "End of connectClustersPostTess() on rank {}\n", me);
   }
 
   void FixDXA::write_cluster_transitions() const
@@ -1540,6 +1804,12 @@ namespace FIXDXA_NS {
                         {bboxMax[0], bboxMax[1], bboxMax[2]});
     bbox[5].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]}, {bboxMax[0], bboxMax[1], bboxMin[2]},
                         {bboxMax[0], bboxMin[1], bboxMin[2]});
+
+    // Cells are crystalline have to be consistent (valid) across domains:
+    // - Their circumsphere does not touch the wall of the domain
+    // However, cells that are on the surface of the domain do not need to be valid
+    // - They have 3 structure type other and 1 infinite vertex (if they are at an open boundary or the opposite face is far away)
+    // - They have 4 structure type other corners if they the other side of the surface is still inside the domain
     std::array<Vector3d, 4> cellVerts;
     for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
       if (!_dt.cellIsRequired(cell)) {
@@ -1990,12 +2260,15 @@ namespace FIXDXA_NS {
     }    // end of for loop
 
     for (size_t facet = 0; facet < 4; ++facet) {
-      Vector3d bVector = edgeVectors[facetLoops[facet][0]].vector;
+      const EdgeVector &v1 = edgeVectors[facetLoops[facet][0]];
+      Vector3d bVector = v1.vector;
 
       const EdgeVector &v2 = edgeVectors[facetLoops[facet][1]];
-      bVector += _clusterGraph.applyReverseTransition(v2.transition1, v2.transition2, v2.vector);
+      bVector += _clusterGraph.applyReverseTransition(v1.transition1, v1.transition2, v2.vector);
+      // bVector += _clusterGraph.applyReverseTransition(v2.transition1, v2.transition2, v2.vector);
 
-      bVector -= edgeVectors[facetLoops[facet][2]].vector;
+      const EdgeVector &v3 = edgeVectors[facetLoops[facet][2]];
+      bVector -= v3.vector;
       if (!bVector.equals(0, LATTICE_VECTOR_EPSILON)) { return false; }
     }
 
@@ -2127,25 +2400,27 @@ namespace FIXDXA_NS {
                                     });
     triangles.reserve(prealloc);
 
-    DynamicDisjointSet<tagint> transitionsDS = _clusterGraph.getDynamicDisjointSet();
+    // DynamicDisjointSet<tagint> transitionsDS = _clusterGraph.getDynamicDisjointSet();
+    DisjointSet<tagint> transitionsDS = _clusterGraph.getDisjointSet();
 
     int vertexCount = 0;
-    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
-      // if (!_dt.cellIsOwned(cell)) { continue; }
+    for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
+
       int rcell = _regions[cell];
       for (int facet = 0; facet < 4; ++facet) {
         if (!_dt.facetIsOwned(cell, facet)) { continue; }
-
         assert(rcell != -3);
         int oppositeCell = _dt.oppositeCell(cell, facet);
-
-        assert(oppositeCell != -1);
+        assert(oppositeCell >= 0);
         assert(oppositeCell < _regions.size());
         int rocell = _regions[oppositeCell];
         assert(rocell != -3);
 
         if (rcell == rocell) { continue; }
         if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
+        // triangles.push_back(transitionsDS.find(rcell));
+        triangles.push_back(transitionsDS.find(rcell));
+        triangles.push_back(rocell);
 
         for (int vert = 0; vert < 3; ++vert) {
           int vertexIndex = _dt.facetVertex(cell, facet, vert);
@@ -2154,12 +2429,12 @@ namespace FIXDXA_NS {
         }
       }
     }
-    assert(triangles.size() % 3 == 0);
+    assert(triangles.size() % 5 == 0);
 
     const std::vector<size_t> order = argsort(remappedIdx);
 
-    assert(remappedIdx[order[order.size() - vertexCount - 1]] == -1);
-    assert(vertexCount > 0 && remappedIdx[order[order.size() - vertexCount]] != -1);
+    // assert(remappedIdx[order[order.size() - vertexCount - 1]] == -1);
+    // assert(vertexCount > 0 && remappedIdx[order[order.size() - vertexCount]] != -1);
     const std::string fname = fmt::format("triangles_on_rank_{}.xyz", me);
     std::ofstream outFile(fname);
     if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
@@ -2168,9 +2443,10 @@ namespace FIXDXA_NS {
       int idx = order[i];    // remappedIdx[order[i]];
       outFile << fmt::format("{} {} {}\n", atom->x[idx][0], atom->x[idx][1], atom->x[idx][2]);
     }
-    outFile << triangles.size() / 3 << " triangles\n";
-    for (size_t i = 0; i < triangles.size(); i += 3) {
-      outFile << fmt::format("{} {} {}\n", triangles[i], triangles[i + 1], triangles[i + 2]);
+    outFile << triangles.size() / 5 << " triangles\n";
+    for (size_t i = 0; i < triangles.size(); i += 5) {
+      outFile << fmt::format("{} {} {} {} {}\n", triangles[i], triangles[i + 1], triangles[i + 2],
+                             triangles[i + 3], triangles[i + 4]);
     }
 #else
     DynamicDisjointSet<tagint> transitionsDS = _clusterGraph.getDynamicDisjointSet();

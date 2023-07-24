@@ -261,20 +261,30 @@ namespace FIXDXA_NS {
     }
 
     struct Node {
-      size_t clusterIdx;
-      size_t parent;
+      tagint cluster;
+      tagint parent;
       int length;
-      Node(size_t clusterIdx, size_t parent, int length) :
-          clusterIdx{clusterIdx}, parent{parent}, length{length}
+      Node(tagint cluster, tagint parent, int length) :
+          cluster{cluster}, parent{parent}, length{length}
       {
       }
-      bool operator==(const Node &other) const { return other.clusterIdx == clusterIdx; }
-      bool operator==(const size_t &other) const { return other == clusterIdx; }
+      bool operator==(const Node &other) const { return other.cluster == cluster; }
+      bool operator==(const tagint &other) const { return other == cluster; }
     };
     // generates a cluster transition from 2 distant clusters in the cluster graph
     // breadth first search of the cluster graph
     size_t determineClusterTransition(tagint cluster1Id, tagint cluster2Id)
     {
+      // if (!containsCluster(cluster1Id)) {
+      //   std::cerr << fmt::format("Requested cluster {} \n", cluster1Id);
+      // }
+      // if (!containsCluster(cluster2Id)) {
+      //   std::cerr << fmt::format("Requested cluster {} \n", cluster2Id);
+      // }
+
+      // assert(containsCluster(cluster1Id));
+      // assert(containsCluster(cluster2Id));
+
       // Check if transition already exists
       {
         int idx = findTransition(cluster1Id, cluster2Id);
@@ -293,20 +303,20 @@ namespace FIXDXA_NS {
       std::deque<Node> queue;
       std::vector<Node> visited;
       visited.reserve(std::min((size_t) 100, numClusters()));
-      queue.emplace_back(findCluster(cluster1Id), 0, 0);
+      queue.emplace_back(cluster1Id, 0, 0);
       visited.emplace_back(queue.front());
 
       Node neighNode{0, 0, 0};
       while (!queue.empty()) {
         const Node &currentNode = queue.front();
-        const Cluster &cluster = _clusters[currentNode.clusterIdx];
+        const tagint cluster = currentNode.cluster;
 
         // TODO search sorted
         for (const auto &t : _transitions) {
-          if (t.cluster1 != cluster.id) { continue; }
+          if (t.cluster1 != cluster) { continue; }
 
-          neighNode.clusterIdx = findCluster(t.cluster2);
-          neighNode.parent = currentNode.clusterIdx;
+          neighNode.cluster = t.cluster2;
+          neighNode.parent = currentNode.cluster;
           neighNode.length = currentNode.length + 1;
 
           // we found a path
@@ -320,19 +330,18 @@ namespace FIXDXA_NS {
         }
 
         // retrace path
-        if (_clusters[neighNode.clusterIdx].id == cluster2Id) {
+        if (neighNode.cluster == cluster2Id) {
           const Node *parent = nullptr;
           const Node *child = &neighNode;
           Matrix3d transition = Matrix3d::Identity();
           do {
             auto pos = std::find(visited.begin(), visited.end(), child->parent);
+
             assert(pos != visited.end());
             parent = &(*pos);
-            transition = transition *
-                getTransitionMatrix(_clusters[parent->clusterIdx].id,
-                                    _clusters[child->clusterIdx].id);
+            transition = transition * getTransitionMatrix(parent->cluster, child->cluster);
             child = parent;
-          } while (_clusters[parent->clusterIdx].id != cluster1Id);
+          } while (parent->cluster != cluster1Id);
           return addClusterTransition(cluster1Id, cluster2Id, transition);
         }
 
@@ -437,6 +446,17 @@ namespace FIXDXA_NS {
       return ds;
     }
 
+    DisjointSet<tagint> getDisjointSet() const
+    {
+      tagint maxID = 0;
+      for (const auto &t : _transitions) {
+        if (t.cluster1 > maxID) { maxID = t.cluster1; }
+      }
+      DisjointSet<tagint> ds(maxID);
+      for (const auto &t : _transitions) { ds.unite(t.cluster1, t.cluster2); }
+      return ds;
+    }
+
    private:
     std::vector<Cluster> _clusters;
     std::vector<ClusterTransition> _transitions;
@@ -488,7 +508,9 @@ namespace FIXDXA_NS {
 
     void buildNNList(int, int);
     void buildClusters();
+    void buildClustersPostTess();
     void connectClusters();
+    void connectClustersPostTess();
 
     int findNeighborIndex(size_t, size_t) const;
     const Vector3d &neighborVector(size_t, size_t) const;

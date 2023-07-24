@@ -479,7 +479,7 @@ namespace FIXDXA_NS {
     {
       T val1set = find(val1);
       T val2set = find(val2);
-      if (val1set == val2.set) { return; }
+      if (val1set == val2) { return; }
 
       if (_size[val1set] > _size[val2set]) {
         _parent[val2set] = val1set;
@@ -516,6 +516,7 @@ namespace FIXDXA_NS {
 
     void unite(T val1, T val2)
     {
+      assert(false && "THERE MIGHT BE A BUG IN HERE");
       int val1parent = find(val1);
       int val2parent = find(val2);
 
