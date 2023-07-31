@@ -516,14 +516,18 @@ namespace FIXDXA_NS {
     const Vector3d &neighborVector(size_t, size_t) const;
     double getSqNeighDistance(int, int);
 
+    void write_per_rank_atoms() const;
+
     void write_cluster_transitions() const;
     void write_cluster_transitions_parallel() const;
-
     void updateClustersFromNeighbors();
 
     // Tessllation
     bool firstTessllation();
     bool validateTessllation();
+    CellValidity validateCell(int, const std::array<Plane<double>, 6> &);
+    CellValidity validateSliverCell(int);
+
     void write_tessellation_parallel() const;
     void write_per_rank_tessellation() const;
     void write_per_rank_edges() const;
@@ -587,7 +591,7 @@ namespace FIXDXA_NS {
       {
         return (a < other.a) || (a == other.a && b < other.b);
       }
-    };
+};
     std::vector<Edge> _edges;
 
     struct EdgeVector {

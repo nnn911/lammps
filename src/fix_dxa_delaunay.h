@@ -19,6 +19,8 @@
 namespace LAMMPS_NS {
 namespace FIXDXA_NS {
 
+  enum class CellValidity : char { VALID, INVALID, OTHER, SURFACE, SLIVER, INFINITE, UNPROCESSED };
+
   class Delaunay {
    public:
     Delaunay() = default;
@@ -53,7 +55,7 @@ namespace FIXDXA_NS {
       _setRequired();
 
       _validCells.clear();
-      _validCells.resize(numFiniteCells(), false);
+      _validCells.resize(numCells(), CellValidity::UNPROCESSED);
 
       _isValid = true;
     }
@@ -112,12 +114,13 @@ namespace FIXDXA_NS {
     bool cellIsRequired(size_t cell) const { return _requiredCells[cell]; }
     bool vertexIsRequired(size_t vertex) const { return _requiredVertices[vertex]; }
 
-    bool cellIsValid(size_t cell) const
+    CellValidity cellIsValid(size_t cell) const
     {
-      if (cellIsFinite(cell)) { return _validCells[cell]; }
-      return false;
+      // if (cellIsFinite(cell)) { return _validCells[cell]; }
+      // return CellValidity::INFINITE;
+      return _validCells[cell];
     }
-    void setCellIsValid(size_t cell, bool valid)
+    void setCellIsValid(size_t cell, CellValidity valid)
     {
       assert(cell < _validCells.size());
       _validCells[cell] = valid;
@@ -135,7 +138,7 @@ namespace FIXDXA_NS {
         cellVerts[vert] = getVertexPos(cellVertex(cell, vert));
       }
       Sphere<double> s{cellVerts[0], cellVerts[1], cellVerts[2], cellVerts[3]};
-      assert(s.valid());
+      assert(s.valid() || s.unreliable());
       if (s.unreliable()) { return AlphaTestResult::UNRELIABLE; }
       return (s.radius() < alpha) ? AlphaTestResult::INSIDE : AlphaTestResult::OUTSIDE;
     }
@@ -187,6 +190,7 @@ namespace FIXDXA_NS {
       bool isOwned;
       _facetOwnership.resize(4 * numCells());
       size_t idx = 0;
+      _numOwnedFacets = 0;
       for (size_t cell = 0; cell < numCells(); ++cell) {
         for (size_t facet = 0; facet < 4; ++facet) {
           isOwned = _facetIsOwned(cell, facet);
@@ -194,6 +198,7 @@ namespace FIXDXA_NS {
           _numOwnedFacets += isOwned;
         }
       }
+      assert(std::count(_facetOwnership.begin(), _facetOwnership.end(), true) == _numOwnedFacets);
     };
 
     bool _facetIsOwned(size_t cell, size_t facet) const
@@ -228,7 +233,7 @@ namespace FIXDXA_NS {
     };
     // static constexpr size_t _facetMap[4][3] = {{0, 1, 2}, {1, 3, 2}, {0, 2, 3}, {0, 3, 1}};
     std::vector<bool> _facetOwnership;
-    std::vector<bool> _validCells;
+    std::vector<CellValidity> _validCells;
     // required cells are either owned or have a neighbor that is owned
     // all required cells need to be valid
     std::vector<bool> _requiredCells;

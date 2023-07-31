@@ -152,7 +152,7 @@ namespace FIXDXA_NS {
     // write_cluster_transitions();
     // write_cluster_transitions_parallel();
     // #endif
-
+    write_per_rank_atoms();
     // Tessellation
     firstTessllation();
     validateTessllation();
@@ -1161,7 +1161,9 @@ namespace FIXDXA_NS {
           // TODO: HERE we might be able to skip all ghost atoms -> because we don't need their orientation etc. It will be replaced in the comm step!
 
           const int neighIdx = _neighborIndices[currentAtom][jj];
+          if (neighIdx == -1 && currentAtom > atom->nlocal) { continue; }
           assert(neighIdx != -1);
+
           const Vector3d &latticeVector = crystalStructure.latticeVectors[permutation[jj]];
           Vector3d spatialVector = xToVector(x[neighIdx]) - iiPosition;
           for (int i = 0; i < 3; ++i) {
@@ -1180,7 +1182,11 @@ namespace FIXDXA_NS {
             int atomIndex;
             if (i != 2) {
               atomIndex = _neighborIndices[currentAtom][crystalStructure.commonNeighbors[jj][i]];
-              assert(atomIndex != -1);
+              // assert(atomIndex != -1);
+              if (atomIndex == -1) {
+                overlap = false;
+                break;
+              }
               tm1.column(i) =
                   crystalStructure
                       .latticeVectors[permutation[crystalStructure.commonNeighbors[jj][i]]] -
@@ -1400,7 +1406,8 @@ namespace FIXDXA_NS {
       // Visit neighbors of the current atom.
       for (int jj = 0; jj < _neighCount; ++jj) {
         const int neighIdx = _neighborIndices[currentAtom][jj];
-        assert(neighIdx != -1);
+        if (neighIdx == -1) { continue; }
+        // assert(neighIdx != -1);
 
         // Skip neighbor atoms belonging to the same cluster or to no cluster at all.
         if (_atomClusterType[neighIdx] == INVALID ||
@@ -1422,7 +1429,11 @@ namespace FIXDXA_NS {
           int atomIndex;
           if (i != 2) {
             atomIndex = _neighborIndices[currentAtom][crystalStructure.commonNeighbors[jj][i]];
-            assert(atomIndex != -1);
+            // assert(atomIndex != -1);
+            if (atomIndex == -1) {
+              overlap = false;
+              break;
+            }
             tm1.column(i) =
                 crystalStructure
                     .latticeVectors[permutation[crystalStructure.commonNeighbors[jj][i]]] -
@@ -1733,7 +1744,7 @@ namespace FIXDXA_NS {
       outbuf.reserve(entriesPerTransition * _dt.numOwnedFacets());
     }
 
-    for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
+    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
       for (size_t facet = 0; facet < 4; ++facet) {
         if (!_dt.facetIsOwned(cell, facet)) { continue; }
         outbuf.push_back(ubuf((tagint) (headerSize + entryCount + cell)).d);
@@ -1762,7 +1773,7 @@ namespace FIXDXA_NS {
                              _displacedAtoms[i][0], _displacedAtoms[i][1], _displacedAtoms[i][2]);
     }
     outFile << _dt.numOwnedFacets() << " triangles\n";
-    for (size_t i = 0; i < _dt.numFiniteCells(); ++i) {
+    for (size_t i = 0; i < _dt.numCells(); ++i) {
       for (size_t j = 0; j < 4; ++j) {
         if (!_dt.facetIsOwned(i, j)) { continue; }
         outFile << fmt::format("{} {} {} {}\n", i, _dt.facetVertex(i, j, 0),
@@ -1773,6 +1784,96 @@ namespace FIXDXA_NS {
     debugLog(lmp, "End of write_tessellation() on rank {}\n", me);
   }
 
+  void FixDXA::write_per_rank_atoms() const
+  {
+    debugLog(lmp, "Start of write_atoms() on rank {}\n", me);
+
+    const std::string fname = fmt::format("atoms_on_rank_{}.xyz", me);
+    std::ofstream outFile(fname);
+    if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
+    outFile << atom->nlocal + atom->nghost
+            << "\nProperties=id:I:1:atom_types:I:1:cluster:I:1:pos:R:3\n";
+    for (size_t i = 0; i < atom->nlocal + atom->nghost; ++i) {
+      outFile << fmt::format("{} {} {} {} {} {}\n", atom->tag[i], (i < atom->nlocal) ? 1 : 2,
+                             _structureType[i], atom->x[i][0], atom->x[i][1], atom->x[i][2]);
+    }
+    debugLog(lmp, "End of write_atoms() on rank {}\n", me);
+  }
+
+  CellValidity FixDXA::validateSliverCell(int cell)
+  {
+    CellValidity cellValid = CellValidity::VALID;
+
+    for (size_t facet = 0; facet < 4; ++facet) {
+      int oppCell = _dt.oppositeCell(cell, facet);
+      if (oppCell == -1) {
+        cellValid = CellValidity::INVALID;
+        break;
+      }
+      cellValid = _dt.cellIsValid(oppCell);
+      assert(cellValid != CellValidity::SLIVER);
+      if (cellValid == CellValidity::INVALID) { break; }
+    }
+    if (cellValid != CellValidity::INVALID) { cellValid = CellValidity::VALID; }
+    _dt.setCellIsValid(cell, cellValid);
+    return cellValid;
+  }
+
+  CellValidity FixDXA::validateCell(int cell, const std::array<Plane<double>, 6> &bbox)
+  {
+    CellValidity cellValid = _dt.cellIsValid(cell);
+    if (cellValid != CellValidity::UNPROCESSED) { return cellValid; }
+
+    std::array<Vector3d, 4> cellVerts;
+    int otherCount = 0;
+    for (size_t vert = 0; vert < 4; ++vert) {
+      int idx = _dt.cellVertex(cell, vert);
+      if (idx == -1) { continue; }
+      cellVerts[vert] = _dt.getVertexPos(idx);
+      otherCount += _structureType[idx] == OTHER;
+    }
+
+    // Deal with defective cells
+    if (cell < _dt.numFiniteCells() && otherCount == 4) {
+      cellValid = CellValidity::OTHER;
+      _dt.setCellIsValid(cell, cellValid);
+      return cellValid;
+    }
+    // Deal with surface cells
+    if (cell >= _dt.numFiniteCells() && otherCount == 3) {
+      cellValid = CellValidity::SURFACE;
+      _dt.setCellIsValid(cell, cellValid);
+      return cellValid;
+    }
+    if (cell > _dt.numFiniteCells()) {
+      debugLog(lmp, "vert idx: {} {} {} {}; vert: {} {} {} {}; other cts: {} on rank {}",
+               _dt.cellVertex(cell, 0), _dt.cellVertex(cell, 1), _dt.cellVertex(cell, 2),
+               _dt.cellVertex(cell, 3), atom->tag[_dt.cellVertex(cell, 0)],
+               atom->tag[_dt.cellVertex(cell, 1)], atom->tag[_dt.cellVertex(cell, 2)],
+               atom->tag[_dt.cellVertex(cell, 3)], otherCount, me);
+    }
+    assert(cell < _dt.numFiniteCells());
+    Sphere<double> s{cellVerts[0], cellVerts[1], cellVerts[2], cellVerts[3]};
+    assert(s.valid() || s.unreliable());
+
+    if (s.unreliable()) {
+      cellValid = CellValidity::SLIVER;
+      _dt.setCellIsValid(cell, cellValid);
+      return cellValid;
+    }
+
+    bool isValid = true;
+    for (const auto &b : bbox) {
+      if (b.isOpenBoundary()) { continue; }
+      double distance = b.getSignedPointDistance(s.origin());
+      isValid = distance < 0 && std::abs(distance) > s.radius();
+      if (!isValid) { break; }
+    }
+    cellValid = (isValid) ? CellValidity::VALID : CellValidity::INVALID;
+    _dt.setCellIsValid(cell, cellValid);
+    return cellValid;
+  }
+
   bool FixDXA::validateTessllation()
   {
 
@@ -1780,60 +1881,130 @@ namespace FIXDXA_NS {
     std::array<Plane<double>, 6> bbox;
     // 100, -100, 010, 0-10, 001, 00-1
     // Bounding box of local and ghost atom
-    std::array<double, 3> bboxMin{std::numeric_limits<double>::max(),
-                                  std::numeric_limits<double>::max(),
-                                  std::numeric_limits<double>::max()};
-    std::array<double, 3> bboxMax{std::numeric_limits<double>::min(),
-                                  std::numeric_limits<double>::min(),
-                                  std::numeric_limits<double>::min()};
-    for (size_t i = 0, end = atom->nlocal + atom->nghost; i < end; ++i) {
-      for (size_t j = 0; j < 3; ++j) {
-        if (atom->x[i][j] < bboxMin[j]) { bboxMin[j] = atom->x[i][j]; }
-        if (atom->x[i][j] > bboxMax[j]) { bboxMax[j] = atom->x[i][j]; }
+    // std::array<double, 3> bboxMin{std::numeric_limits<double>::max(),
+    //                               std::numeric_limits<double>::max(),
+    //                               std::numeric_limits<double>::max()};
+    // std::array<double, 3> bboxMax{std::numeric_limits<double>::min(),
+    //                               std::numeric_limits<double>::min(),
+    //                               std::numeric_limits<double>::min()};
+    // for (size_t i = 0, end = atom->nlocal + atom->nghost; i < end; ++i) {
+    //   for (size_t j = 0; j < 3; ++j) {
+    //     if (atom->x[i][j] < bboxMin[j]) { bboxMin[j] = atom->x[i][j]; }
+    //     if (atom->x[i][j] > bboxMax[j]) { bboxMax[j] = atom->x[i][j]; }
+    //   }
+    // }
+    std::array<double, 3> bboxMin;
+    std::array<double, 3> bboxMax;
+    {
+      double *cutghost = comm->cutghost;
+      if (domain->triclinic == 0) {
+        bboxMin[0] = domain->sublo[0] - cutghost[0];
+        bboxMin[1] = domain->sublo[1] - cutghost[1];
+        bboxMin[2] = domain->sublo[2] - cutghost[2];
+        bboxMax[0] = domain->subhi[0] + cutghost[0];
+        bboxMax[1] = domain->subhi[1] + cutghost[1];
+        bboxMax[2] = domain->subhi[2] + cutghost[2];
+      } else {
+        std::array<double, 3> lo;
+        std::array<double, 3> hi;
+        lo[0] = domain->sublo_lamda[0] - cutghost[0];
+        lo[1] = domain->sublo_lamda[1] - cutghost[1];
+        lo[2] = domain->sublo_lamda[2] - cutghost[2];
+        hi[0] = domain->subhi_lamda[0] + cutghost[0];
+        hi[1] = domain->subhi_lamda[1] + cutghost[1];
+        hi[2] = domain->subhi_lamda[2] + cutghost[2];
+        domain->bbox(lo.data(), hi.data(), bboxMin.data(), bboxMax.data());
       }
     }
-    bbox[0].replaceData({bboxMax[0], bboxMin[1], bboxMin[2]}, {bboxMax[0], bboxMax[1], bboxMax[2]},
-                        {bboxMax[0], bboxMin[1], bboxMax[2]});
-    bbox[1].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]}, {bboxMin[0], bboxMin[1], bboxMax[2]},
-                        {bboxMin[0], bboxMax[1], bboxMax[2]});
-    bbox[2].replaceData({bboxMax[0], bboxMax[1], bboxMin[2]}, {bboxMin[0], bboxMax[1], bboxMin[2]},
-                        {bboxMin[0], bboxMax[1], bboxMax[2]});
-    bbox[3].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]}, {bboxMax[0], bboxMin[1], bboxMin[2]},
-                        {bboxMin[0], bboxMin[1], bboxMax[2]});
-    bbox[4].replaceData({bboxMin[0], bboxMin[1], bboxMax[2]}, {bboxMax[0], bboxMin[1], bboxMax[2]},
-                        {bboxMax[0], bboxMax[1], bboxMax[2]});
-    bbox[5].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]}, {bboxMax[0], bboxMax[1], bboxMin[2]},
-                        {bboxMax[0], bboxMin[1], bboxMin[2]});
+
+    {    // Subdomain boundaries (0,1) coordiantes
+      std::array<double, 3> sublo = {domain->sublo_lamda[0], domain->sublo_lamda[1],
+                                     domain->sublo_lamda[2]};
+      std::array<double, 3> subhi = {domain->subhi_lamda[0], domain->subhi_lamda[1],
+                                     domain->subhi_lamda[2]};
+      // pbc flags x,y,z
+      std::array<int, 3> periodic = {domain->periodicity[0], domain->periodicity[1],
+                                     domain->periodicity[2]};
+      // 100, -100, 010, 0-10, 001, 00-1
+      // Bounding box of local and ghost atom
+      bbox[0].replaceData({bboxMax[0], bboxMin[1], bboxMin[2]},
+                          {bboxMax[0], bboxMax[1], bboxMax[2]},
+                          {bboxMax[0], bboxMin[1], bboxMax[2]});
+      bbox[0].setOpenBoundary(almostEqual(subhi[0], 1.0) && !periodic[0]);
+      bbox[1].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]},
+                          {bboxMin[0], bboxMin[1], bboxMax[2]},
+                          {bboxMin[0], bboxMax[1], bboxMax[2]});
+      bbox[1].setOpenBoundary(almostEqual(sublo[0], 0.0) && !periodic[0]);
+      bbox[2].replaceData({bboxMax[0], bboxMax[1], bboxMin[2]},
+                          {bboxMin[0], bboxMax[1], bboxMin[2]},
+                          {bboxMin[0], bboxMax[1], bboxMax[2]});
+      bbox[2].setOpenBoundary(almostEqual(subhi[1], 1.0) && !periodic[1]);
+      bbox[3].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]},
+                          {bboxMax[0], bboxMin[1], bboxMin[2]},
+                          {bboxMin[0], bboxMin[1], bboxMax[2]});
+      bbox[3].setOpenBoundary(almostEqual(sublo[1], 0.0) && !periodic[1]);
+      bbox[4].replaceData({bboxMin[0], bboxMin[1], bboxMax[2]},
+                          {bboxMax[0], bboxMin[1], bboxMax[2]},
+                          {bboxMax[0], bboxMax[1], bboxMax[2]});
+      bbox[4].setOpenBoundary(almostEqual(subhi[2], 1.0) && !periodic[2]);
+      bbox[5].replaceData({bboxMin[0], bboxMin[1], bboxMin[2]},
+                          {bboxMax[0], bboxMax[1], bboxMin[2]},
+                          {bboxMax[0], bboxMin[1], bboxMin[2]});
+      bbox[5].setOpenBoundary(almostEqual(sublo[2], 0.0) && !periodic[2]);
+    }
 
     // Cells are crystalline have to be consistent (valid) across domains:
     // - Their circumsphere does not touch the wall of the domain
     // However, cells that are on the surface of the domain do not need to be valid
     // - They have 3 structure type other and 1 infinite vertex (if they are at an open boundary or the opposite face is far away)
     // - They have 4 structure type other corners if they the other side of the surface is still inside the domain
-    std::array<Vector3d, 4> cellVerts;
-    for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
-      if (!_dt.cellIsRequired(cell)) {
-        _dt.setCellIsValid(cell, false);
-        continue;
-      }
-      for (size_t vert = 0; vert < 4; ++vert) {
-        int idx = _dt.cellVertex(cell, vert);
-        cellVerts[vert] = _dt.getVertexPos(idx);
-      }
-      Sphere<double> s{cellVerts[0], cellVerts[1], cellVerts[2], cellVerts[3]};
-      assert(s.valid());
-      bool isValid = true;
-      for (const auto &b : bbox) {
-        double distance = b.getSignedPointDistance(s.origin());
-        isValid = distance < 0 && std::abs(distance) > s.radius();
-        if (!isValid) { break; }
-      }
-      _dt.setCellIsValid(cell, isValid);
-      if (!isValid) {
+    // -> This should / might handle open boundaries
+
+    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+      if (!_dt.cellIsRequired(cell)) { continue; }
+
+      CellValidity cellValid = validateCell(cell, bbox);
+
+      if (cellValid == CellValidity::INVALID) {
         lmp->error->all(FLERR, "Delaunay tessellation not correct!\n");
         return false;
       }
     }
+
+    // fix sliver cells
+    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+      if (!_dt.cellIsRequired(cell)) { continue; }
+      if (_dt.cellIsValid(cell) != CellValidity::SLIVER) { continue; }
+
+      CellValidity cellValid = validateSliverCell(cell);
+
+      if (cellValid == CellValidity::INVALID) {
+        lmp->error->all(FLERR, "Delaunay tessellation not correct!\n");
+        return false;
+      }
+    }
+
+#if 0
+    // Infinite cells
+    for (size_t cell = _dt.numFiniteCells(); cell < _dt.numCells(); ++cell) {
+      if (!_dt.cellIsRequired(cell)) {
+        // _dt.setCellIsValid(cell, false);
+        continue;
+      }
+      int otherCount = 0;
+      for (size_t vert = 0; vert < 4; ++vert) {
+        int idx = _dt.cellVertex(cell, vert);
+        if (idx == -1) { continue; }
+        // cellVerts[vert] = _dt.getVertexPos(idx);
+        otherCount += _structureType[idx] == OTHER;
+      }
+      if (otherCount == 3) {
+        // _dt.setCellIsValid(cell, true);
+        continue;
+      }
+      lmp->error->all(FLERR, "Delaunay tessellation not correct!\n");
+    }
+#endif
     return true;
   }
 
@@ -1879,9 +2050,11 @@ namespace FIXDXA_NS {
 
     for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
       if (!_dt.cellIsRequired(cell)) { continue; }
+      if (_dt.cellIsValid(cell) == CellValidity::SURFACE) { continue; }
+      assert(_dt.cellIsValid(cell) != CellValidity::INVALID ||
+             _dt.cellIsValid(cell) != CellValidity::UNPROCESSED);
       for (size_t facet = 0; facet < 4; ++facet) {
         // if (!_dt.facetIsOwned(cell, facet)) { continue; }
-        assert(_dt.cellIsValid(cell));
         for (size_t e = 0; e < 3; ++e) {
           // edge from a -> b
           newEdge.a = _dt.facetVertex(cell, facet, e);
@@ -2334,7 +2507,8 @@ namespace FIXDXA_NS {
     double alpha = 5 * _maxNeighDistance;
     for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
       if (!_dt.cellIsRequired(cell)) { continue; }
-      assert(_dt.cellIsValid(cell));
+      assert(_dt.cellIsValid(cell) != CellValidity::INVALID);
+
       bool isFilled = false;
       if (_dt.cellIsFinite(cell)) {
         Delaunay::AlphaTestResult alphaTestResult = _dt.alphaTest(cell, alpha);
@@ -2404,8 +2578,8 @@ namespace FIXDXA_NS {
     DisjointSet<tagint> transitionsDS = _clusterGraph.getDisjointSet();
 
     int vertexCount = 0;
-    for (size_t cell = 0; cell < _dt.numFiniteCells(); ++cell) {
-
+    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+      if (!_dt.cellIsRequired(cell)) { continue; }
       int rcell = _regions[cell];
       for (int facet = 0; facet < 4; ++facet) {
         if (!_dt.facetIsOwned(cell, facet)) { continue; }
@@ -2416,11 +2590,13 @@ namespace FIXDXA_NS {
         int rocell = _regions[oppositeCell];
         assert(rocell != -3);
 
-        if (rcell == rocell) { continue; }
-        if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
+        // if (rcell == rocell) { continue; }
+        if ((rcell == -1 && rocell == -2) || (rcell == -2 && rocell == -1)) { continue; }
+        // if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
+
         // triangles.push_back(transitionsDS.find(rcell));
         triangles.push_back(transitionsDS.find(rcell));
-        triangles.push_back(rocell);
+        triangles.push_back(transitionsDS.find(rocell));
 
         for (int vert = 0; vert < 3; ++vert) {
           int vertexIndex = _dt.facetVertex(cell, facet, vert);

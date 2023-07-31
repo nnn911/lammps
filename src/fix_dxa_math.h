@@ -324,7 +324,6 @@ namespace FIXDXA_NS {
       T length_n = n.length();
       _p = d / length_n;
       _n = n / length_n;
-      assert(almostEqual(_n.length(), 1.0));
     }
 
     T getSignedPointDistance(const Vector3<T> &p0) const { return _n.dot(p0) + _p; }
@@ -333,9 +332,13 @@ namespace FIXDXA_NS {
     const Vector3<T> &getPlaneNormal() const { return _n; }
     T getP() const { return _p; }
 
+    bool isOpenBoundary() const { return _openBoundary; }
+    void setOpenBoundary(bool boundary) { _openBoundary = boundary; }
+
    private:
     Vector3<T> _n;
     T _p;
+    bool _openBoundary = false;
   };
 
   template <typename T> class Sphere {
@@ -350,26 +353,48 @@ namespace FIXDXA_NS {
       p1 -= p0o;
       p2 -= p0o;
       p3 -= p0o;
-      const Vector4<T> pxp = {p0.dot(p0), p1.dot(p1), p2.dot(p2), p3.dot(p3)};
-      Matrix4<T> matrix = {p0[0], p0[1], p0[2], 1.0, p1[0], p1[1], p1[2], 1.0,
-                           p2[0], p2[1], p2[2], 1.0, p3[0], p3[1], p3[2], 1.0};
-      const T alpha = matrix.determinant();
-      matrix = {pxp[0], p0[0], p0[1], p0[2], pxp[1], p1[0], p1[1], p1[2],
-                pxp[2], p2[0], p2[1], p2[2], pxp[3], p3[0], p3[1], p3[2]};
-      const T gamma = matrix.determinant();
-      matrix = {pxp[0], p0[1], p0[2], 1.0, pxp[1], p1[1], p1[2], 1.0,
-                pxp[2], p2[1], p2[2], 1.0, pxp[3], p3[1], p3[2], 1.0};
-      const T Dx = matrix.determinant();
-      matrix = {pxp[0], p0[0], p0[2], 1.0, pxp[1], p1[0], p1[2], 1.0,
-                pxp[2], p2[0], p2[2], 1.0, pxp[3], p3[0], p3[2], 1.0};
-      const T Dy = -1.0 * matrix.determinant();
-      matrix = {pxp[0], p0[0], p0[1], 1.0, pxp[1], p1[0], p1[1], 1.0,
-                pxp[2], p2[0], p2[1], 1.0, pxp[3], p3[0], p3[1], 1.0};
-      const T Dz = matrix.determinant();
-      if (std::abs(alpha) < EPSILON) {
-        _valid = false;
-      } else {
-        _origin = {Dx / (2.0 * alpha), Dy / (2.0 * alpha), Dz / (2.0 * alpha)};
+
+      {
+        double V = std::abs(p1.dot(p2.cross(p3))) / 6;
+        std::array<double, 6> edgeLengths = {p1.lengthSquared(),        p2.lengthSquared(),
+                                             p3.lengthSquared(),        (p2 - p1).lengthSquared(),
+                                             (p3 - p1).lengthSquared(), (p3 - p2).lengthSquared()};
+        double lrms = std::sqrt(
+            (std::accumulate(edgeLengths.begin(), edgeLengths.end(), (double) 0.0)) / 6.0);
+        // 1/(6*sqrt(2)) for equilateral tetrahedron
+        // appraoches 0 for degenerate tetrahedra
+        // https://people.eecs.berkeley.edu/~jrs/meshpapers/delnotes.pdf
+        // based on doi.org/10.1016/0168-874X(94)90033-7
+        constexpr double threshold = 1e-4 / 0.1178511301977579;    // -> 1e-4 / (6 sqrt(2))
+        double measure = V / (lrms * lrms * lrms);
+        if (measure < threshold) {
+          _unreliable = true;
+          _valid = false;
+          return;
+        }
+      }
+      {
+        const Vector4<T> pxp = {p0.dot(p0), p1.dot(p1), p2.dot(p2), p3.dot(p3)};
+        Matrix4<T> matrix = {p0[0], p0[1], p0[2], 1.0, p1[0], p1[1], p1[2], 1.0,
+                             p2[0], p2[1], p2[2], 1.0, p3[0], p3[1], p3[2], 1.0};
+        const T alpha = matrix.determinant();
+        matrix = {pxp[0], p0[0], p0[1], p0[2], pxp[1], p1[0], p1[1], p1[2],
+                  pxp[2], p2[0], p2[1], p2[2], pxp[3], p3[0], p3[1], p3[2]};
+        const T gamma = matrix.determinant();
+        matrix = {pxp[0], p0[1], p0[2], 1.0, pxp[1], p1[1], p1[2], 1.0,
+                  pxp[2], p2[1], p2[2], 1.0, pxp[3], p3[1], p3[2], 1.0};
+        const T Dx = matrix.determinant();
+        matrix = {pxp[0], p0[0], p0[2], 1.0, pxp[1], p1[0], p1[2], 1.0,
+                  pxp[2], p2[0], p2[2], 1.0, pxp[3], p3[0], p3[2], 1.0};
+        const T Dy = -1.0 * matrix.determinant();
+        matrix = {pxp[0], p0[0], p0[1], 1.0, pxp[1], p1[0], p1[1], 1.0,
+                  pxp[2], p2[0], p2[1], 1.0, pxp[3], p3[0], p3[1], 1.0};
+        const T Dz = matrix.determinant();
+        if (std::abs(alpha) < EPSILON) {
+          _valid = false;
+          return;
+        }
+        _origin = {Dx / ((T) 2 * alpha), Dy / ((T) 2 * alpha), Dz / ((T) 2 * alpha)};
         // Reset the translation original translation
         _origin += p0o;
         T nomin = Dx * Dx + Dy * Dy + Dz * Dz - 4.0 * alpha * gamma;
@@ -380,10 +405,8 @@ namespace FIXDXA_NS {
           _radius = std::sqrt(nomin) / (denom);
           _valid = true;
         }
-
-        // for certain sliver tetrahedrons the results might be unreliable
-        if (_valid && nomin < 1e-9 && std::abs(denom) < 1e-9) { _unreliable = true; }
       }
+
 #ifndef NDEBUG
       if (valid()) {
         const T eps = 1e-6;
@@ -392,26 +415,6 @@ namespace FIXDXA_NS {
         T r2 = (p2 + p0o - _origin).length();
         T r3 = (p3 + p0o - _origin).length();
 
-        // if (!almostEqual(_radius, r0, eps) || !almostEqual(_radius, r1, eps) ||
-        //     !almostEqual(_radius, r2, eps) || !almostEqual(_radius, r3, eps)) {
-
-        //   std::cerr << std::setiosflags(std::ios::fixed);
-        //   std::cerr << std::setprecision(16);
-        //   std::cerr << _radius << " r0: " << r0 << "\n";
-        //   std::cerr << _radius << " r1: " << r1 << "\n";
-        //   std::cerr << _radius << " r2: " << r2 << "\n";
-        //   std::cerr << _radius << " r3: " << r3 << "\n";
-        //   std::cerr << "origin: " << _origin[0] << " " << _origin[1] << " " << _origin[2] << "\n";
-        //   std::cerr << "Dx: " << Dx << " "
-        //             << "Dy: " << Dy << " "
-        //             << "Dz: " << Dz << " "
-        //             << "alpha: " << alpha << " gamma: " << gamma << "\n";
-        //   std::cerr << "p0: " << p0[0] << " " << p0[1] << " " << p0[2] << "\n";
-        //   std::cerr << "p1: " << p1[0] << " " << p1[1] << " " << p1[2] << "\n";
-        //   std::cerr << "p2: " << p2[0] << " " << p2[1] << " " << p2[2] << "\n";
-        //   std::cerr << "p3: " << p3[0] << " " << p3[1] << " " << p3[2] << "\n";
-        //   std::cerr << '\n';
-        // }
         assert(almostEqual(_radius, r0, eps));
         assert(almostEqual(_radius, r1, eps));
         assert(almostEqual(_radius, r2, eps));
@@ -463,6 +466,7 @@ namespace FIXDXA_NS {
 
     void reset(T n)
     {
+      n += 1;
       _parent.resize(n);
       std::iota(_parent.begin(), _parent.end(), (T) 0);
       _size.resize(n, 0);
@@ -470,6 +474,11 @@ namespace FIXDXA_NS {
 
     T find(T val)
     {
+      if (val < 0) { return val; }
+      if (val >= _parent.size()) {
+        std::cerr << fmt::format("Invalid cluster transition {} / {}\n", val, _parent.size());
+      }
+      assert(val < _parent.size());
       if (_parent[val] != val) { _parent[val] = find(_parent[val]); }
       return _parent[val];
     }
