@@ -186,6 +186,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::init()
   {
+    // sleep(5);
     if (!(atom->tag_enable))
       error->all(FLERR, "Fix DXA requires atoms having IDs. Please use 'atom_modify id yes'");
     neighbor->add_request(this,
@@ -1720,7 +1721,7 @@ namespace FIXDXA_NS {
     MPI_Comm_size(world, &nprocs);
 
     assert(_dt.isValid());
-    const int sbuf = (int) _dt.numOwnedFacets();
+    const int sbuf = (int) (_dt.numOwnedFacets());
     std::vector<int> rbuf;
     rbuf.resize(nprocs);
     MPI_Allgather(&sbuf, 1, MPI_INT, rbuf.data(), 1, MPI_INT, world);
@@ -1774,8 +1775,8 @@ namespace FIXDXA_NS {
     }
     outFile << _dt.numOwnedFacets() << " triangles\n";
     for (size_t i = 0; i < _dt.numCells(); ++i) {
+      if (!_dt.cellIsOwned(i)) { continue; }
       for (size_t j = 0; j < 4; ++j) {
-        if (!_dt.facetIsOwned(i, j)) { continue; }
         outFile << fmt::format("{} {} {} {}\n", i, _dt.facetVertex(i, j, 0),
                                _dt.facetVertex(i, j, 1), _dt.facetVertex(i, j, 2));
       }
@@ -1795,7 +1796,7 @@ namespace FIXDXA_NS {
             << "\nProperties=id:I:1:atom_types:I:1:cluster:I:1:pos:R:3\n";
     for (size_t i = 0; i < atom->nlocal + atom->nghost; ++i) {
       outFile << fmt::format("{} {} {} {} {} {}\n", atom->tag[i], (i < atom->nlocal) ? 1 : 2,
-                             _structureType[i], atom->x[i][0], atom->x[i][1], atom->x[i][2]);
+                             (int) _structureType[i], atom->x[i][0], atom->x[i][1], atom->x[i][2]);
     }
     debugLog(lmp, "End of write_atoms() on rank {}\n", me);
   }
@@ -2013,13 +2014,16 @@ namespace FIXDXA_NS {
     debugLog(lmp, "Start of firstTessllation() on rank {}\n", me);
     size_t ntotal = atom->nlocal + atom->nghost;
     _displacedAtoms.resize(ntotal);
+
     auto rng = std::unique_ptr<RanPark>(new RanPark(lmp, 1323 + me));
     for (size_t i = 0; i < 50; ++i) { rng->uniform(); };
+
+    const double scale = 1e-4 / _maxNeighDistance;
     for (size_t i = 0; i < atom->nlocal; ++i) {
       // TODO: This dispalcement is very large but guarantees succesful comparison with scipy delaunay
-      _displacedAtoms[i][0] = 1e-4 * (2 * rng->uniform() - 1);
-      _displacedAtoms[i][1] = 1e-4 * (2 * rng->uniform() - 1);
-      _displacedAtoms[i][2] = 1e-4 * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][0] = scale * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][1] = scale * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][2] = scale * (2 * rng->uniform() - 1);
     }
 
     _commStep = DISPLACEMENT;
@@ -2170,8 +2174,19 @@ namespace FIXDXA_NS {
 
     const bool validCluster1 = _atomSymmetryPermutations[atom1] != -1;
     const bool validCluster2 = _atomSymmetryPermutations[atom2] != -1;
+
+    bool debugThis = (atom->tag[atom1] == 7008 && atom->tag[atom2] == 13110) ||
+        (atom->tag[atom2] == 7008 && atom->tag[atom1] == 13110);
+    if (debugThis) {
+      auto a = 1;
+      auto b = 1;
+    }
     if (validCluster1) {
       const int neighborIndex = findNeighborIndex(atom1, atom2);
+      if (debugThis) {
+        debugLog(lmp, "\nFind path {}: {} {} {}\n", me, validCluster1, validCluster2,
+                 neighborIndex);
+      }
       if (neighborIndex != -1) {
         const Vector3d &neighVec = neighborVector(atom1, neighborIndex);
         return {neighVec, _atomClusterType[atom1]};
@@ -2179,6 +2194,10 @@ namespace FIXDXA_NS {
     }
     if (validCluster2) {
       const int neighborIndex = findNeighborIndex(atom2, atom1);
+      if (debugThis) {
+        debugLog(lmp, "\nFind path {}: {} {} {}\n", me, validCluster1, validCluster2,
+                 neighborIndex);
+      }
       if (neighborIndex != -1) {
         const Vector3d &neighVec = neighborVector(atom2, neighborIndex);
         return {-1 * neighVec, _atomClusterType[atom2]};
@@ -2204,7 +2223,7 @@ namespace FIXDXA_NS {
       assert(neighCount <= _neighCount);
       const std::array<int, _maxNeighCount> &nnlist = _neighborIndices[currentNode.atom];
 
-      for (size_t jj = 0; jj < neighCount; ++jj) {
+      for (size_t jj = 0; jj < _neighCount; ++jj) {
         neighAtom = nnlist[jj];
         if (neighAtom == -1) { continue; }
         // Path should only traverse valid cells
@@ -2297,6 +2316,7 @@ namespace FIXDXA_NS {
     }
 
     // no path was found
+    if (debugThis) { debugLog(lmp, "\nFind path {}: {} {}: Path not found!\n", me, atom1, atom2); }
     return {{0, 0, 0}, -1};
   }
 
@@ -2310,9 +2330,18 @@ namespace FIXDXA_NS {
     for (size_t edgeIdx = 0; edgeIdx < _edges.size(); ++edgeIdx) {
       const Edge &edge = _edges[edgeIdx];
 
+      bool debugThis = (atom->tag[edge.b] == 7008 && atom->tag[edge.a] == 13110) ||
+          (atom->tag[edge.a] == 7008 && atom->tag[edge.b] == 13110);
+
       size_t cluster1Id = _atomClusterType[edge.a];
       size_t cluster2Id = _atomClusterType[edge.b];
       assert(cluster1Id != INVALID && cluster2Id != INVALID);
+
+      if (debugThis) {
+        debugLog(lmp, "\n{}: {} {}: {} {}: {} {}: {} {}\n", me, edge.a, edge.b,
+                 edge.a < atom->nlocal, edge.b < atom->nlocal, atom->tag[edge.a], atom->tag[edge.b],
+                 cluster1Id, cluster2Id);
+      }
 
       // TODO: at the moment cluster information is not! trasnferred to other processors
       // therefore cluster.orientation might contain only zeros
@@ -2320,7 +2349,27 @@ namespace FIXDXA_NS {
 
       int idealCluster;
       Vector3d idealVector;
+
+      // TODO -> THIS IS PROBABLY WRONG - WHAT IS THE IDEAL CLUSTER IN THIS CASE
+      // if (_structureType[edge.a] == OTHER) {
+      //   std::tie(idealVector, idealCluster) = findPath(edge.b, edge.a, 4);
+      //   idealVector = -1 * idealVector;
+      // } else {
+      //   std::tie(idealVector, idealCluster) = findPath(edge.a, edge.b, 4);
+      // }
       std::tie(idealVector, idealCluster) = findPath(edge.a, edge.b, 4);
+
+      if (debugThis) {
+        debugLog(lmp, "{}: {} {}: {} {}: {} {}: {} {}: {}\n", me, cluster1Id, cluster2Id,
+                 (int) _structureType[edge.a], (int) _structureType[edge.b],
+                 _atomSymmetryPermutations[edge.a], _atomSymmetryPermutations[edge.b],
+                 _clusterGraph.containsCluster(cluster1Id),
+                 _clusterGraph.containsCluster(cluster2Id),
+                 _clusterGraph.containsTransition(cluster1Id, cluster2Id));
+        debugLog(lmp, "{}: {}: {} {} {}\n", me, idealCluster, idealVector[0], idealVector[1],
+                 idealVector[2]);
+      }
+
       if (idealCluster == -1) { continue; }
 
       if (cluster1Id == cluster2Id && cluster1Id == idealCluster) {
@@ -2388,6 +2437,24 @@ namespace FIXDXA_NS {
   {
     if (!_dt.cellIsFinite(cell)) { return false; }
 
+    bool debugThis = false;
+    {
+      std::array<int, 4> i1;
+      i1[0] = _dt.cellVertex(cell, 0);
+      i1[1] = _dt.cellVertex(cell, 1);
+      i1[2] = _dt.cellVertex(cell, 2);
+      i1[3] = _dt.cellVertex(cell, 3);
+      std::array<int, 4> c1;
+      c1[0] = atom->tag[i1[0]];
+      c1[1] = atom->tag[i1[1]];
+      c1[2] = atom->tag[i1[2]];
+      c1[3] = atom->tag[i1[3]];
+      std::sort(c1.begin(), c1.end());
+      const std::array<int, 4> ref4 = {7008, 12816, 13110, 13112};
+      debugThis = c1 == ref4;
+      if (debugThis) { debugLog(lmp, "\n"); }
+    }
+
     // store the 6 edges of the tetrahedron
     static constexpr std::array<std::array<int, 2>, 6> edgeVertexOrder{
         {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}}};
@@ -2404,6 +2471,15 @@ namespace FIXDXA_NS {
       if (*pos == edge) {
         size_t idx = std::distance(_edges.begin(), pos);
         const EdgeVector &edgeVec = _edgeVectors[idx];
+
+        if (debugThis) {
+          debugLog(lmp, "{} Edge {}: {} {}: {} {}: {} {}: {} {}: {} {}\n", me, edgeIndex,
+                   atom->tag[edge.a], atom->tag[edge.b], (int) _structureType[edge.a],
+                   (int) _structureType[edge.b], _atomClusterType[edge.a], _atomClusterType[edge.b],
+                   _atomSymmetryPermutations[edge.a], _atomSymmetryPermutations[edge.b],
+                   edgeVec.transition1, edgeVec.transition2);
+        }
+
         if (edgeVec.transition1 == 0 || edgeVec.transition2 == 0) { return false; }
         edgeVectors[edgeIndex] = edgeVec;
         continue;
@@ -2414,6 +2490,15 @@ namespace FIXDXA_NS {
       if (*pos == reverseEdge) {
         size_t idx = std::distance(_edges.begin(), pos);
         const EdgeVector &edgeVec = _edgeVectors[idx];
+
+        if (debugThis) {
+          debugLog(lmp, "{} revEdge {}: {} {}: {} {}: {} {}: {} {}: {} {}\n", me, edgeIndex,
+                   atom->tag[edge.a], atom->tag[edge.b], (int) _structureType[edge.a],
+                   (int) _structureType[edge.b], _atomClusterType[edge.a], _atomClusterType[edge.b],
+                   _atomSymmetryPermutations[edge.a], _atomSymmetryPermutations[edge.b],
+                   edgeVec.transition1, edgeVec.transition2);
+        }
+
         if (edgeVec.transition1 == 0 || edgeVec.transition2 == 0) { return false; }
         if (edgeVec.transition1 == edgeVec.transition2) {
           edgeVectors[edgeIndex].vector = -1 * edgeVec.vector;
@@ -2442,6 +2527,13 @@ namespace FIXDXA_NS {
 
       const EdgeVector &v3 = edgeVectors[facetLoops[facet][2]];
       bVector -= v3.vector;
+
+      if (debugThis) {
+        debugLog(lmp, "{} {}: {} {} {}: {} {} {}: {} {} {}\n", me, facet, v1.vector[0],
+                 v1.vector[1], v1.vector[2], v2.vector[0], v2.vector[1], v2.vector[2], v3.vector[0],
+                 v3.vector[1], v3.vector[2]);
+      }
+
       if (!bVector.equals(0, LATTICE_VECTOR_EPSILON)) { return false; }
     }
 
@@ -2579,24 +2671,187 @@ namespace FIXDXA_NS {
 
     int vertexCount = 0;
     for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
-      if (!_dt.cellIsRequired(cell)) { continue; }
+      // if (!_dt.cellIsOwned(cell)) { continue; }
       int rcell = _regions[cell];
+
+#if 0
+      {
+        std::array<int, 4> c1;
+        c1[0] = atom->tag[_dt.cellVertex(cell, 0)];
+        c1[1] = atom->tag[_dt.cellVertex(cell, 1)];
+        c1[2] = atom->tag[_dt.cellVertex(cell, 2)];
+        c1[3] = atom->tag[_dt.cellVertex(cell, 3)];
+        std::sort(c1.begin(), c1.end());
+
+        // const std::array<int, 4> ref1 = {7008, 7013, 7027, 13112};
+        // const std::array<int, 4> ref2 = {7013, 7029, 13110, 13112};
+        // const std::array<int, 4> ref3 = {7008, 7013, 7027, 13110};
+        // const std::array<int, 4> ref4 = {7008, 7013, 13110, 13112};
+        const std::array<int, 4> ref1 = {7013, 7029, 13110, 13112};
+        const std::array<int, 4> ref2 = {7008, 7013, 13110, 13112};
+
+        if (c1 == ref1 || c1 == ref2) {
+          debugLog(lmp, "\nCR: {} {} {}; {} {} {} {}; {}\n", me, cell, _dt.cellIsRequired(cell),
+                   c1[0], c1[1], c1[2], c1[3], rcell);
+        }
+      }
+#endif
+
       for (int facet = 0; facet < 4; ++facet) {
         if (!_dt.facetIsOwned(cell, facet)) { continue; }
-        assert(rcell != -3);
+        // assert(rcell != -3);
         int oppositeCell = _dt.oppositeCell(cell, facet);
-        assert(oppositeCell >= 0);
-        assert(oppositeCell < _regions.size());
+        // assert(oppositeCell >= 0);
+        // assert(oppositeCell < _regions.size());
+        // assert(oppositeCell != cell);
+
         int rocell = _regions[oppositeCell];
-        assert(rocell != -3);
+        // assert(rocell != -3);
 
-        // if (rcell == rocell) { continue; }
+        if (_dt.cellIsRequired(cell)) {
+          std::array<int, 4> i1;
+          i1[0] = _dt.cellVertex(cell, 0);
+          i1[1] = _dt.cellVertex(cell, 1);
+          i1[2] = _dt.cellVertex(cell, 2);
+          i1[3] = _dt.cellVertex(cell, 3);
+          std::array<int, 4> c1;
+          c1[0] = atom->tag[i1[0]];
+          c1[1] = atom->tag[i1[1]];
+          c1[2] = atom->tag[i1[2]];
+          c1[3] = atom->tag[i1[3]];
+          std::sort(c1.begin(), c1.end());
+
+          // const std::array<int, 4> ref1 = {7013, 7029, 13110, 13112};
+          // const std::array<int, 4> ref2 = {7008, 7013, 13110, 13112};
+          // const std::array<int, 4> ref3 = {7008, 7011, 7013, 13110};
+          const std::array<int, 4> ref4 = {7008, 12816, 13110, 13112};
+
+          std::array<int, 3> f1;
+          f1[0] = atom->tag[_dt.facetVertex(cell, facet, 0)];
+          f1[1] = atom->tag[_dt.facetVertex(cell, facet, 1)];
+          f1[2] = atom->tag[_dt.facetVertex(cell, facet, 2)];
+
+          if (c1 == ref4) {
+            debugLog(lmp, "\n{} {} ; {} {} {} {}; {} {} {}; {} {}\n", me, cell, c1[0], c1[1], c1[2],
+                     c1[3], f1[0], f1[1], f1[2], rcell, rocell);
+            debugLog(lmp, "{} {}; {} {} {} {}; {} {} {} {}\n", me, cell,
+                     (int) _structureType[i1[0]], (int) _structureType[i1[1]],
+                     (int) _structureType[i1[2]], (int) _structureType[i1[3]],
+                     _atomClusterType[i1[0]], _atomClusterType[i1[1]], _atomClusterType[i1[2]],
+                     _atomClusterType[i1[3]]);
+            // debugLog(lmp, "CR: {} {}; {} {} {}; {} {} {}; {} {} {}; {} {} {}\n", me, cell,
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 0), 0),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 0), 1),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 0), 2),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 1), 0),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 1), 1),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 1), 2),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 2), 0),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 2), 1),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 2), 2),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 3), 0),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 3), 1),
+            //          _dt.getVertexPos(_dt.cellVertex(cell, 3), 2));
+            // std::array<int, 4> f1;
+            // f1[0] = atom->tag[_dt.facetVertex(cell, facet, 0)];
+            // f1[1] = atom->tag[_dt.facetVertex(cell, facet, 1)];
+            // f1[2] = atom->tag[_dt.facetVertex(cell, facet, 2)];
+
+            // std::array<int, 4> c2;
+            // c2[0] = atom->tag[_dt.cellVertex(oppositeCell, 0)];
+            // c2[1] = atom->tag[_dt.cellVertex(oppositeCell, 1)];
+            // c2[2] = atom->tag[_dt.cellVertex(oppositeCell, 2)];
+            // c2[3] = atom->tag[_dt.cellVertex(oppositeCell, 3)];
+            // debugLog(lmp, "\nCR: {}; {} {} {} {}; {} {} {}; {} {} {} {}\n", me, c1[0], c1[1], c1[2],
+            //          c1[3], f1[0], f1[1], f1[2], c2[0], c2[1], c2[2], c2[3]);
+          }
+        }
+#if 0
+        {
+          std::array<int, 4> c1;
+          c1[0] = atom->tag[_dt.cellVertex(cell, 0)];
+          c1[1] = atom->tag[_dt.cellVertex(cell, 1)];
+          c1[2] = atom->tag[_dt.cellVertex(cell, 2)];
+          c1[3] = atom->tag[_dt.cellVertex(cell, 3)];
+          std::sort(c1.begin(), c1.end());
+          std::array<int, 4> c2;
+          c2[0] = atom->tag[_dt.cellVertex(oppositeCell, 0)];
+          c2[1] = atom->tag[_dt.cellVertex(oppositeCell, 1)];
+          c2[2] = atom->tag[_dt.cellVertex(oppositeCell, 2)];
+          c2[3] = atom->tag[_dt.cellVertex(oppositeCell, 3)];
+          std::sort(c2.begin(), c2.end());
+
+          // const std::array<int, 4> ref = {7029, 13112, 13113, 13114};
+          const std::array<int, 4> ref = {7008, 7011, 7013, 13110};
+          // const std::array<int, 4> ref = {12827, 13112, 13113, 13114};
+
+          std::array<int, 3> f1;
+          f1[0] = atom->tag[_dt.facetVertex(cell, facet, 0)];
+          f1[1] = atom->tag[_dt.facetVertex(cell, facet, 1)];
+          f1[2] = atom->tag[_dt.facetVertex(cell, facet, 2)];
+          std::array<int, 3> f2;
+          f2[0] = atom->tag[_dt.facetVertex(oppositeCell, facet, 0)];
+          f2[1] = atom->tag[_dt.facetVertex(oppositeCell, facet, 1)];
+          f2[2] = atom->tag[_dt.facetVertex(oppositeCell, facet, 2)];
+
+          // if ((c1 == ref || c2 == ref)) {
+          if ((c1 == ref)) {
+            // debugLog(lmp, "\n{}; {} {}; {} {}; {} {} {}; {} {} {}; {} {}\n", me, cell, oppositeCell,
+            //          _dt.facetIsOwned(cell, facet), _dt.facetIsOwned(oppositeCell, facet), f1[0],
+            //          f1[1], f1[2], f2[0], f2[1], f2[2], rcell, rocell);
+            // debugLog(lmp, "{} {} {}\n", (rcell == rocell),
+            //          ((rcell == -1 && rocell == -2) || (rcell == -2 && rocell == -1)),
+            //          (transitionsDS.find(rcell) == transitionsDS.find(rocell)));
+          }
+        }
+
+        {
+          std::array<int, 4> c1;
+          c1[0] = atom->tag[_dt.cellVertex(cell, 0)];
+          c1[1] = atom->tag[_dt.cellVertex(cell, 1)];
+          c1[2] = atom->tag[_dt.cellVertex(cell, 2)];
+          c1[3] = atom->tag[_dt.cellVertex(cell, 3)];
+          std::sort(c1.begin(), c1.end());
+          std::array<int, 4> c2;
+          c2[0] = atom->tag[_dt.cellVertex(oppositeCell, 0)];
+          c2[1] = atom->tag[_dt.cellVertex(oppositeCell, 1)];
+          c2[2] = atom->tag[_dt.cellVertex(oppositeCell, 2)];
+          c2[3] = atom->tag[_dt.cellVertex(oppositeCell, 3)];
+          std::sort(c2.begin(), c2.end());
+
+          const std::array<int, 4> ref = {7008, 7013, 13110, 13112};
+
+          std::array<int, 3> f1;
+          f1[0] = atom->tag[_dt.facetVertex(cell, facet, 0)];
+          f1[1] = atom->tag[_dt.facetVertex(cell, facet, 1)];
+          f1[2] = atom->tag[_dt.facetVertex(cell, facet, 2)];
+          std::array<int, 3> f2;
+          f2[0] = atom->tag[_dt.facetVertex(oppositeCell, facet, 0)];
+          f2[1] = atom->tag[_dt.facetVertex(oppositeCell, facet, 1)];
+          f2[2] = atom->tag[_dt.facetVertex(oppositeCell, facet, 2)];
+
+          // if ((c1 == ref || c2 == ref)) {
+          if ((c1 == ref)) {
+            // debugLog(lmp, "\n{}; {} {}; {} {}; {} {} {}; {} {} {}; {} {}\n", me, cell, oppositeCell,
+            //          _dt.facetIsOwned(cell, facet), _dt.facetIsOwned(oppositeCell, facet), f1[0],
+            //          f1[1], f1[2], f2[0], f2[1], f2[2], rcell, rocell);
+            // debugLog(lmp, "{} {} {}\n", (rcell == rocell),
+            //          ((rcell == -1 && rocell == -2) || (rcell == -2 && rocell == -1)),
+            //          (transitionsDS.find(rcell) == transitionsDS.find(rocell)));
+          }
+        }
+
+#endif
+        if (rcell == rocell) { continue; }
         if ((rcell == -1 && rocell == -2) || (rcell == -2 && rocell == -1)) { continue; }
-        // if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
+        if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
 
-        // triangles.push_back(transitionsDS.find(rcell));
+        // triangles.push_back(rcell);
         triangles.push_back(transitionsDS.find(rcell));
         triangles.push_back(transitionsDS.find(rocell));
+        // triangles.push_back(rocell);
+        // triangles.push_back(rocell);
+        // triangles.push_back((int) _dt.cellIsValid(cell));
 
         for (int vert = 0; vert < 3; ++vert) {
           int vertexIndex = _dt.facetVertex(cell, facet, vert);

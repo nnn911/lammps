@@ -65,13 +65,8 @@ namespace FIXDXA_NS {
     size_t numCells() const { return _dt->nb_cells(); };
     size_t numFiniteCells() const { return _dt->nb_finite_cells(); };
     size_t numVertices() const { return _dt->nb_vertices(); };
-    size_t numOwnedCells() const
-    {
-      size_t count = 0;
-      for (size_t cell = 0; cell < numCells(); ++cell) { count += cellIsOwned(cell); }
-      return count;
-    };
     size_t numOwnedFacets() const { return _numOwnedFacets; };
+    // size_t numOwnedCells() const { return _numOwnedCells; };
 
     // takes a local facet index [0,4) and a local index around that facet [0,3) and returns the
     // local index into the cell
@@ -100,16 +95,25 @@ namespace FIXDXA_NS {
     }
 
     bool cellIsFinite(size_t cell) const { return _dt->cell_is_finite(cell); }
+
+    bool facetIsOwned(size_t cell, size_t facet) const
+    {
+      assert(cell >= 0 && cell < numCells());
+      assert(facet >= 0 && facet < 4);
+      assert(4 * cell + facet < _facetOwnership.size());
+      return _facetOwnership[4 * cell + facet];
+    }
     bool cellIsOwned(size_t cell) const
     {
-      // cell is owned if one or more of its facets are owned
-      // cells can be owned by multiple processors
-      // facets can only be owned by one processor
-      for (size_t facet = 0; facet < 4; ++facet) {
-        if (facetIsOwned(cell, facet)) { return true; }
-      }
-      return false;
+      assert(cell >= 0 && cell < numCells());
+      return facetIsOwned(cell, 0) && facetIsOwned(cell, 1) && facetIsOwned(cell, 2) &&
+          facetIsOwned(cell, 3);
     }
+    //     bool cellIsOwned(size_t cell) const
+    // {
+    //   assert(cell >= 0 && cell < _cellOwnership.size());
+    //   return _cellOwnership[cell];
+    // }
 
     bool cellIsRequired(size_t cell) const { return _requiredCells[cell]; }
     bool vertexIsRequired(size_t vertex) const { return _requiredVertices[vertex]; }
@@ -125,8 +129,6 @@ namespace FIXDXA_NS {
       assert(cell < _validCells.size());
       _validCells[cell] = valid;
     }
-
-    bool facetIsOwned(size_t cell, size_t facet) const { return _facetOwnership[4 * cell + facet]; }
 
     bool isValid() const { return _isValid; }
 
@@ -188,38 +190,49 @@ namespace FIXDXA_NS {
     void _setOwned()
     {
       bool isOwned;
-      _facetOwnership.resize(4 * numCells());
-      size_t idx = 0;
-      _numOwnedFacets = 0;
+      _facetOwnership.clear();
+      _facetOwnership.resize(4 * numCells(), false);
+      size_t index = 0;
+
+      int ownedCount = 0;
+      int vert;
       for (size_t cell = 0; cell < numCells(); ++cell) {
         for (size_t facet = 0; facet < 4; ++facet) {
-          isOwned = _facetIsOwned(cell, facet);
-          _facetOwnership[idx++] = isOwned;
+          ownedCount = 0;
+          for (size_t lv = 0; lv < 3; ++lv) {
+            vert = facetVertex(cell, facet, lv);
+            ownedCount += vert >= 0 && vert < _nlocal;
+          }
+          isOwned = ownedCount >= 2;
+          _facetOwnership[index++] = isOwned;
           _numOwnedFacets += isOwned;
         }
       }
-      assert(std::count(_facetOwnership.begin(), _facetOwnership.end(), true) == _numOwnedFacets);
-    };
 
-    bool _facetIsOwned(size_t cell, size_t facet) const
-    {
-      // a facet is owned if its vertex with the lowest tag is owned (local atoms)
-      // facets can only be owned by one processor
-      tagint minVert = std::numeric_limits<tagint>::max();
-      bool minVertOwned = false;
-      for (size_t vert = 0; vert < 3; ++vert) {
-        int cellVert = cellVertex(cell, facetLocalVertex(facet, vert));
-        if (_tags[cellVert] < minVert) {
-          minVert = _tags[cellVert];
-          minVertOwned = cellVert < _nlocal;
-        }
-      }
-      return minVertOwned;
-    }
+      // _cellOwnership.clear();
+      // _cellOwnership.resize(numCells(), false);
+      // _numOwnedCells = 0;
+
+      // tagint minTag = std::numeric_limits<tagint>::max();
+      // for (size_t cell = 0; cell < numCells(); ++cell) {
+      //   minTag = std::numeric_limits<tagint>::max();
+      //   for (size_t vert = 0; vert < 4; ++vert) {
+      //     int vertIdx = _dt->cell_vertex(cell, vert);
+      //     if (vertIdx == -1) { continue; }
+      //     if (_tags[vertIdx] < minTag) {
+      //       minTag = _tags[vertIdx];
+      //       isOwned = vertIdx < _nlocal;
+      //     }
+      //   }
+      //   _cellOwnership[cell] = isOwned;
+      //   _numOwnedCells += isOwned;
+      // }
+    };
 
    private:
     bool _init = false;
     bool _isValid = false;
+    // size_t _numOwnedCells = 0;
     size_t _numOwnedFacets = 0;
     size_t _nlocal;
     size_t _nghost;
@@ -232,6 +245,7 @@ namespace FIXDXA_NS {
         {0, 1, 2},
     };
     // static constexpr size_t _facetMap[4][3] = {{0, 1, 2}, {1, 3, 2}, {0, 2, 3}, {0, 3, 1}};
+    // std::vector<bool> _cellOwnership;
     std::vector<bool> _facetOwnership;
     std::vector<CellValidity> _validCells;
     // required cells are either owned or have a neighbor that is owned
