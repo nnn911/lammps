@@ -127,6 +127,8 @@ namespace FIXDXA_NS {
 
     MPI_Comm_rank(world, &me);
 
+    sleep(5);
+
     debugLog(lmp, "End of FixDXA() on rank {}\n", me);
   }
 
@@ -1795,7 +1797,7 @@ namespace FIXDXA_NS {
             << "\nProperties=id:I:1:atom_types:I:1:cluster:I:1:pos:R:3\n";
     for (size_t i = 0; i < atom->nlocal + atom->nghost; ++i) {
       outFile << fmt::format("{} {} {} {} {} {}\n", atom->tag[i], (i < atom->nlocal) ? 1 : 2,
-                             _structureType[i], atom->x[i][0], atom->x[i][1], atom->x[i][2]);
+                             (int) _structureType[i], atom->x[i][0], atom->x[i][1], atom->x[i][2]);
     }
     debugLog(lmp, "End of write_atoms() on rank {}\n", me);
   }
@@ -2015,11 +2017,13 @@ namespace FIXDXA_NS {
     _displacedAtoms.resize(ntotal);
     auto rng = std::unique_ptr<RanPark>(new RanPark(lmp, 1323 + me));
     for (size_t i = 0; i < 50; ++i) { rng->uniform(); };
+
+    const double scale = 1e-4 / _maxNeighDistance;
     for (size_t i = 0; i < atom->nlocal; ++i) {
       // TODO: This dispalcement is very large but guarantees succesful comparison with scipy delaunay
-      _displacedAtoms[i][0] = 1e-4 * (2 * rng->uniform() - 1);
-      _displacedAtoms[i][1] = 1e-4 * (2 * rng->uniform() - 1);
-      _displacedAtoms[i][2] = 1e-4 * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][0] = scale * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][1] = scale * (2 * rng->uniform() - 1);
+      _displacedAtoms[i][2] = scale * (2 * rng->uniform() - 1);
     }
 
     _commStep = DISPLACEMENT;
@@ -2168,6 +2172,13 @@ namespace FIXDXA_NS {
     // debugLog(lmp, "findPath() atoms {} {}\n", atom1, atom2);
     assert(atom1 != atom2);
 
+    bool debugThis = (atom->tag[atom1] == 7008 && atom->tag[atom2] == 13110) ||
+        (atom->tag[atom2] == 7008 && atom->tag[atom1] == 13110);
+
+    if (debugThis) {
+      debugLog(lmp, "\n{}: {} {}: {} {}\n", me, atom->tag[atom1], atom->tag[atom2],
+               (int) _structureType[atom1], (int) _structureType[atom2]);
+    }
     const bool validCluster1 = _atomSymmetryPermutations[atom1] != -1;
     const bool validCluster2 = _atomSymmetryPermutations[atom2] != -1;
     if (validCluster1) {
@@ -2210,9 +2221,6 @@ namespace FIXDXA_NS {
         // Path should only traverse valid cells
         if (!_dt.vertexIsRequired(neighAtom)) { continue; }
 
-        // if the atomCluster only got filled by the previous propagation of cluster -> skip
-        if (_atomSymmetryPermutations[neighAtom] == -1) { continue; }
-
         // if (_atomClusterType[currentNode.atom] == 4412 && _atomClusterType[neighAtom] == 27860) {
         //   auto x = 5;
         //   ;
@@ -2232,6 +2240,9 @@ namespace FIXDXA_NS {
 
         // we have found a path
         if (transition && neighAtom == atom2) { break; }
+
+        // if the atomCluster only got filled by the previous propagation of cluster -> skip
+        if (_atomSymmetryPermutations[neighAtom] == -1) { continue; }
 
         Node neighNode{(size_t) neighAtom, currentNode.atom, currentNode.length + 1};
         // neighbor has not been visited
@@ -2297,6 +2308,7 @@ namespace FIXDXA_NS {
     }
 
     // no path was found
+    if (debugThis) { debugLog(lmp, "\n{}: Path not found\n", me); }
     return {{0, 0, 0}, -1};
   }
 
@@ -2310,6 +2322,17 @@ namespace FIXDXA_NS {
     for (size_t edgeIdx = 0; edgeIdx < _edges.size(); ++edgeIdx) {
       const Edge &edge = _edges[edgeIdx];
 
+      bool debugThis = (atom->tag[edge.a] == 13113 && atom->tag[edge.b] == 13114) ||
+          (atom->tag[edge.b] == 13114 && atom->tag[edge.a] == 13113) ||
+          (atom->tag[edge.a] == 13112 && atom->tag[edge.b] == 13113) ||
+          (atom->tag[edge.b] == 13113 && atom->tag[edge.a] == 13112) ||
+          (atom->tag[edge.a] == 13112 && atom->tag[edge.b] == 13114) ||
+          (atom->tag[edge.b] == 13114 && atom->tag[edge.a] == 13112);
+      if (debugThis) {
+        auto a = 1;
+        auto b = 2;
+      }
+
       size_t cluster1Id = _atomClusterType[edge.a];
       size_t cluster2Id = _atomClusterType[edge.b];
       assert(cluster1Id != INVALID && cluster2Id != INVALID);
@@ -2320,7 +2343,18 @@ namespace FIXDXA_NS {
 
       int idealCluster;
       Vector3d idealVector;
-      std::tie(idealVector, idealCluster) = findPath(edge.a, edge.b, 4);
+      if (_structureType[edge.a] == OTHER) {
+        std::tie(idealVector, idealCluster) = findPath(edge.b, edge.a, 4);
+        idealVector = -1 * idealVector;
+      } else {
+        std::tie(idealVector, idealCluster) = findPath(edge.a, edge.b, 4);
+      }
+      if (debugThis) {
+        debugLog(lmp, "\n{}: {}->{}: {} {}: {} {}: {}: {} {} {}\n", me, atom->tag[edge.a],
+                 atom->tag[edge.b], (int) _structureType[edge.a], (int) _structureType[edge.b],
+                 cluster1Id, cluster2Id, idealCluster, idealVector[0], idealVector[1],
+                 idealVector[2]);
+      }
       if (idealCluster == -1) { continue; }
 
       if (cluster1Id == cluster2Id && cluster1Id == idealCluster) {
@@ -2590,9 +2624,9 @@ namespace FIXDXA_NS {
         int rocell = _regions[oppositeCell];
         assert(rocell != -3);
 
-        // if (rcell == rocell) { continue; }
+        if (rcell == rocell) { continue; }
         if ((rcell == -1 && rocell == -2) || (rcell == -2 && rocell == -1)) { continue; }
-        // if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
+        if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
 
         // triangles.push_back(transitionsDS.find(rcell));
         triangles.push_back(transitionsDS.find(rcell));
