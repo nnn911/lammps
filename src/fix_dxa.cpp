@@ -2172,13 +2172,6 @@ namespace FIXDXA_NS {
     // debugLog(lmp, "findPath() atoms {} {}\n", atom1, atom2);
     assert(atom1 != atom2);
 
-    bool debugThis = (atom->tag[atom1] == 7008 && atom->tag[atom2] == 13110) ||
-        (atom->tag[atom2] == 7008 && atom->tag[atom1] == 13110);
-
-    if (debugThis) {
-      debugLog(lmp, "\n{}: {} {}: {} {}\n", me, atom->tag[atom1], atom->tag[atom2],
-               (int) _structureType[atom1], (int) _structureType[atom2]);
-    }
     const bool validCluster1 = _atomSymmetryPermutations[atom1] != -1;
     const bool validCluster2 = _atomSymmetryPermutations[atom2] != -1;
     if (validCluster1) {
@@ -2308,7 +2301,6 @@ namespace FIXDXA_NS {
     }
 
     // no path was found
-    if (debugThis) { debugLog(lmp, "\n{}: Path not found\n", me); }
     return {{0, 0, 0}, -1};
   }
 
@@ -2321,17 +2313,6 @@ namespace FIXDXA_NS {
 
     for (size_t edgeIdx = 0; edgeIdx < _edges.size(); ++edgeIdx) {
       const Edge &edge = _edges[edgeIdx];
-
-      bool debugThis = (atom->tag[edge.a] == 13113 && atom->tag[edge.b] == 13114) ||
-          (atom->tag[edge.b] == 13114 && atom->tag[edge.a] == 13113) ||
-          (atom->tag[edge.a] == 13112 && atom->tag[edge.b] == 13113) ||
-          (atom->tag[edge.b] == 13113 && atom->tag[edge.a] == 13112) ||
-          (atom->tag[edge.a] == 13112 && atom->tag[edge.b] == 13114) ||
-          (atom->tag[edge.b] == 13114 && atom->tag[edge.a] == 13112);
-      if (debugThis) {
-        auto a = 1;
-        auto b = 2;
-      }
 
       size_t cluster1Id = _atomClusterType[edge.a];
       size_t cluster2Id = _atomClusterType[edge.b];
@@ -2348,12 +2329,6 @@ namespace FIXDXA_NS {
         idealVector = -1 * idealVector;
       } else {
         std::tie(idealVector, idealCluster) = findPath(edge.a, edge.b, 4);
-      }
-      if (debugThis) {
-        debugLog(lmp, "\n{}: {}->{}: {} {}: {} {}: {}: {} {} {}\n", me, atom->tag[edge.a],
-                 atom->tag[edge.b], (int) _structureType[edge.a], (int) _structureType[edge.b],
-                 cluster1Id, cluster2Id, idealCluster, idealVector[0], idealVector[1],
-                 idealVector[2]);
       }
       if (idealCluster == -1) { continue; }
 
@@ -2472,7 +2447,6 @@ namespace FIXDXA_NS {
 
       const EdgeVector &v2 = edgeVectors[facetLoops[facet][1]];
       bVector += _clusterGraph.applyReverseTransition(v1.transition1, v1.transition2, v2.vector);
-      // bVector += _clusterGraph.applyReverseTransition(v2.transition1, v2.transition2, v2.vector);
 
       const EdgeVector &v3 = edgeVectors[facetLoops[facet][2]];
       bVector -= v3.vector;
@@ -2536,6 +2510,8 @@ namespace FIXDXA_NS {
 
   void FixDXA::classifyRegions()
   {
+    debugLog(lmp, "Start of classifyRegions() on rank {}\n", me);
+
     _regions.clear();
     _regions.resize(_dt.numCells(), -3);
     double alpha = 5 * _maxNeighDistance;
@@ -2581,6 +2557,7 @@ namespace FIXDXA_NS {
         _regions[cell] = -2;
       }
     }
+    debugLog(lmp, "End of classifyRegions() on rank {}\n", me);
   }
 
   template <typename T> static std::vector<size_t> argsort(const std::vector<T> &arr)
@@ -2595,7 +2572,7 @@ namespace FIXDXA_NS {
 
   void FixDXA::constructMesh() const
   {
-#if 1
+    debugLog(lmp, "Start of constructMesh() on rank {}\n", me);
     assert(_regions.size() == _dt.numCells());
     std::vector<int> remappedIdx;
     remappedIdx.resize(atom->nlocal + atom->nghost, -1);
@@ -2608,7 +2585,6 @@ namespace FIXDXA_NS {
                                     });
     triangles.reserve(prealloc);
 
-    // DynamicDisjointSet<tagint> transitionsDS = _clusterGraph.getDynamicDisjointSet();
     DisjointSet<tagint> transitionsDS = _clusterGraph.getDisjointSet();
 
     int vertexCount = 0;
@@ -2628,7 +2604,6 @@ namespace FIXDXA_NS {
         if ((rcell == -1 && rocell == -2) || (rcell == -2 && rocell == -1)) { continue; }
         if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
 
-        // triangles.push_back(transitionsDS.find(rcell));
         triangles.push_back(transitionsDS.find(rcell));
         triangles.push_back(transitionsDS.find(rocell));
 
@@ -2643,8 +2618,6 @@ namespace FIXDXA_NS {
 
     const std::vector<size_t> order = argsort(remappedIdx);
 
-    // assert(remappedIdx[order[order.size() - vertexCount - 1]] == -1);
-    // assert(vertexCount > 0 && remappedIdx[order[order.size() - vertexCount]] != -1);
     const std::string fname = fmt::format("triangles_on_rank_{}.xyz", me);
     std::ofstream outFile(fname);
     if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
@@ -2658,30 +2631,7 @@ namespace FIXDXA_NS {
       outFile << fmt::format("{} {} {} {} {}\n", triangles[i], triangles[i + 1], triangles[i + 2],
                              triangles[i + 3], triangles[i + 4]);
     }
-#else
-    DynamicDisjointSet<tagint> transitionsDS = _clusterGraph.getDynamicDisjointSet();
-
-    const std::string fname = fmt::format("triangles_on_rank_{}.xyz", me);
-    std::ofstream outFile(fname);
-    if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
-    outFile << "DXA debug triangle file\n" << atom->nlocal + atom->nghost << '\n';
-    for (size_t i = 0; i < atom->nlocal + atom->nghost; ++i) {
-      outFile << fmt::format("{} {} {} {} {}\n", atom->tag[i], (i < atom->nlocal) ? 1 : 2,
-                             atom->x[i][0], atom->x[i][1], atom->x[i][2]);
-    }
-    outFile << _dt.numOwnedCells() << " cells\n";
-
-    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
-      if (!_dt.cellIsOwned(cell)) { continue; }
-      outFile << transitionsDS.find(_regions[cell]) << ' ';
-      for (size_t facet = 0; facet < 4; ++facet) {
-        outFile << fmt::format("{} {} {} ", _dt.facetVertex(cell, facet, 0),
-                               _dt.facetVertex(cell, facet, 1), _dt.facetVertex(cell, facet, 2));
-      }
-      outFile << '\n';
-    }
-
-#endif
+    debugLog(lmp, "End of constructMesh() on rank {}\n", me);
   }
 
 }    // namespace FIXDXA_NS
