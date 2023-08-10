@@ -1881,20 +1881,7 @@ namespace FIXDXA_NS {
 
     // planes of bounding box
     std::array<Plane<double>, 6> bbox;
-    // 100, -100, 010, 0-10, 001, 00-1
-    // Bounding box of local and ghost atom
-    // std::array<double, 3> bboxMin{std::numeric_limits<double>::max(),
-    //                               std::numeric_limits<double>::max(),
-    //                               std::numeric_limits<double>::max()};
-    // std::array<double, 3> bboxMax{std::numeric_limits<double>::min(),
-    //                               std::numeric_limits<double>::min(),
-    //                               std::numeric_limits<double>::min()};
-    // for (size_t i = 0, end = atom->nlocal + atom->nghost; i < end; ++i) {
-    //   for (size_t j = 0; j < 3; ++j) {
-    //     if (atom->x[i][j] < bboxMin[j]) { bboxMin[j] = atom->x[i][j]; }
-    //     if (atom->x[i][j] > bboxMax[j]) { bboxMax[j] = atom->x[i][j]; }
-    //   }
-    // }
+
     std::array<double, 3> bboxMin;
     std::array<double, 3> bboxMax;
     {
@@ -2058,7 +2045,6 @@ namespace FIXDXA_NS {
       assert(_dt.cellIsValid(cell) != CellValidity::INVALID ||
              _dt.cellIsValid(cell) != CellValidity::UNPROCESSED);
       for (size_t facet = 0; facet < 4; ++facet) {
-        // if (!_dt.facetIsOwned(cell, facet)) { continue; }
         for (size_t e = 0; e < 3; ++e) {
           // edge from a -> b
           newEdge.a = _dt.facetVertex(cell, facet, e);
@@ -2066,9 +2052,6 @@ namespace FIXDXA_NS {
 
           assert(newEdge.a != newEdge.b);
           if (newEdge.a > newEdge.b) { std::swap(newEdge.a, newEdge.b); }
-          // TODO: test alternatives to linear search
-          // auto pos = std::find(_edges.begin(), _edges.end(), newEdge);
-          // if (pos == _edges.end()) { _edges.push_back({newEdge.a, newEdge.b}); }
           edgesSet.insert({newEdge.a, newEdge.b});
         }
       }
@@ -2152,24 +2135,10 @@ namespace FIXDXA_NS {
     bool operator==(const size_t other) const { return other == atom; }
   };
 
-  // struct NodeHash {
-  //   size_t operator()(const Node &node) const
-  //   {
-  //     return hashCombine(node.atom, hashCombine(node.parent, node.length));
-  //   }
-
-  //   // Boost hash combine https://stackoverflow.com/a/2595226
-  //   size_t hashCombine(size_t hash, size_t newValue) const
-  //   {
-  //     return hash ^= std::hash<size_t>{}(newValue) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-  //   }
-  // };
-
   // TODO check whether this can be const
   std::pair<Vector3d, int> FixDXA::findPath(const size_t atom1, const size_t atom2,
                                             const char numSteps)
   {
-    // debugLog(lmp, "findPath() atoms {} {}\n", atom1, atom2);
     assert(atom1 != atom2);
 
     const bool validCluster1 = _atomSymmetryPermutations[atom1] != -1;
@@ -2198,7 +2167,7 @@ namespace FIXDXA_NS {
     // Breadth first path search
     queue.push_front({atom1, (size_t) 0, 0});
     visited.push_back(queue.front());
-    // visitedFlag[atom1] = true;
+
     while (!queue.empty()) {
       const Node &currentNode = queue.front();
 
@@ -2214,19 +2183,9 @@ namespace FIXDXA_NS {
         // Path should only traverse valid cells
         if (!_dt.vertexIsRequired(neighAtom)) { continue; }
 
-        // if (_atomClusterType[currentNode.atom] == 4412 && _atomClusterType[neighAtom] == 27860) {
-        //   auto x = 5;
-        //   ;
-        // }
-        // if (_atomClusterType[currentNode.atom] == 27860 && _atomClusterType[neighAtom] == 4412) {
-        //   auto x = 5;
-        //   ;
-        // }
-
         if (_atomClusterType[currentNode.atom] == _atomClusterType[neighAtom]) {
           transition = true;
         } else {
-          // TODO is the cluster graph bi-directional / do I need to check the inverse transition?
           transition = _clusterGraph.containsTransition(_atomClusterType[currentNode.atom],
                                                         _atomClusterType[neighAtom]);
         }
@@ -2241,10 +2200,8 @@ namespace FIXDXA_NS {
         // neighbor has not been visited
         if (transition && neighNode.length < numSteps &&
             std::find(visited.begin(), visited.end(), neighNode) == visited.end()) {
-          // if (transition && neighNode.length < numSteps && !visitedFlag[neighNode.atom]) {
           queue.push_back(neighNode);
           visited.push_back(neighNode);
-          // visitedFlag[neighNode.atom] = true;
         }
       }
 
@@ -2257,18 +2214,10 @@ namespace FIXDXA_NS {
         size_t neighIndex = findNeighborIndex(currentNode.atom, neighAtom);
         Vector3d neighVec = neighborVector(currentNode.atom, neighIndex);
 
-        // debugLog(lmp, "Path from {} ({}) -> {} ({})\n", atom1, _atomClusterType[atom1], atom2,
-        //          _atomClusterType[atom2]);
-        // debugLog(lmp, "{} ({}) <- {} ({}) <- ", neighAtom, _atomClusterType[neighAtom],
-        //          currentNode.atom, _atomClusterType[currentNode.atom]);
-
         const Node *child = &currentNode;
         auto pos = std::find(visited.begin(), visited.end(), child->parent);
         assert(pos != visited.end());
         const Node *parent = &(*pos);
-
-        // debugLog(lmp, "{} ({}) <- {} ({}) <- ", child->atom, _atomClusterType[child->atom],
-        //          parent->atom, _atomClusterType[parent->atom]);
 
         size_t exitVar = 0;
         while (true) {
@@ -2288,11 +2237,8 @@ namespace FIXDXA_NS {
           assert(pos != visited.end());
           parent = &(*pos);
 
-          // debugLog(lmp, "{} ({}) <- {} ({}) <- ", child->atom, _atomClusterType[child->atom],
-          //          parent->atom, _atomClusterType[parent->atom]);
           if (exitVar++ == 2 * numSteps) { unreachable(lmp); }
         };
-        // debugLog(lmp, "\n");
 
         return {neighVec, _atomClusterType[atom1]};
       }
