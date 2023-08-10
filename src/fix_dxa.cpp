@@ -127,7 +127,7 @@ namespace FIXDXA_NS {
 
     MPI_Comm_rank(world, &me);
 
-    sleep(5);
+    // sleep(5);
 
     debugLog(lmp, "End of FixDXA() on rank {}\n", me);
   }

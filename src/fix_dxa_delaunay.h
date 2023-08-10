@@ -203,18 +203,14 @@ namespace FIXDXA_NS {
 
     bool _facetIsOwned(size_t cell, size_t facet) const
     {
-      // a facet is owned if its vertex with the lowest tag is owned (local atoms)
-      // facets can only be owned by one processor
-      tagint minVert = std::numeric_limits<tagint>::max();
-      bool minVertOwned = false;
-      for (size_t vert = 0; vert < 3; ++vert) {
-        int cellVert = cellVertex(cell, facetLocalVertex(facet, vert));
-        if (_tags[cellVert] < minVert) {
-          minVert = _tags[cellVert];
-          minVertOwned = cellVert < _nlocal;
-        }
+      // // a facet is owned if the majority of its vertices is owned
+      // // facets can only be owned by one processor
+      int ownedCount = 0;
+      for (size_t lv = 0; lv < 3; ++lv) {
+        int vert = facetVertex(cell, facet, lv);
+        ownedCount += vert >= 0 && vert < _nlocal;
       }
-      return minVertOwned;
+      return ownedCount >= 2;
     }
 
    private:
