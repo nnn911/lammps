@@ -12,6 +12,7 @@
 #define LMP_FIX_DXA_MATH_H
 
 #include <array>
+#include <fmt/format.h>
 #include <numeric>
 
 namespace LAMMPS_NS {
@@ -33,6 +34,7 @@ namespace FIXDXA_NS {
    public:
     Vector3() = default;
     Vector3(T x, T y, T z) : std::array<T, 3>{{x, y, z}} {};
+    explicit Vector3(const T data[]) : std::array<T, 3>{{data[0], data[1], data[2]}} {};
 
     constexpr inline T x() const { return (*this)[0]; }
     constexpr inline T y() const { return (*this)[1]; }
@@ -505,6 +507,7 @@ namespace FIXDXA_NS {
     std::vector<T> _size;
   };
 
+#if 0
   template <typename T> class DynamicDisjointSet {
    public:
     DynamicDisjointSet() = default;
@@ -544,6 +547,7 @@ namespace FIXDXA_NS {
     std::unordered_map<T, T> _parent;
     std::unordered_map<T, T> _size;
   };
+#endif
 }    // namespace FIXDXA_NS
 }    // namespace LAMMPS_NS
 

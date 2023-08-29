@@ -19,199 +19,106 @@
 namespace LAMMPS_NS {
 namespace FIXDXA_NS {
 
+  typedef GEO::index_t LocalVertexHandle;
+  typedef GEO::index_t VertexHandle;
+  typedef GEO::signed_index_t SignedVertexHandle;
+  typedef GEO::signed_index_t SignedCellHandle;
+  typedef GEO::index_t CellHandle;
+  typedef GEO::index_t LocalFacetHandle;
+
+  struct Facet {
+    CellHandle cell;
+    LocalFacetHandle lf;
+  };
+
   enum class CellValidity : char { VALID, INVALID, OTHER, SURFACE, SLIVER, INFINITE, UNPROCESSED };
+
+  class Delaunay;
+
+  class FacetCirculator {
+   public:
+    FacetCirculator(const Delaunay &, SignedVertexHandle, SignedVertexHandle, CellHandle,
+                    LocalFacetHandle);
+    FacetCirculator &operator--();
+    FacetCirculator operator--(int);
+    FacetCirculator &operator++();
+    FacetCirculator operator++(int);
+    [[nodiscard]] Facet operator*() const;
+    [[nodiscard]] Facet operator->() const;
+
+    [[nodiscard]] CellHandle cell() const;
+    [[nodiscard]] LocalFacetHandle facet() const;
+    bool operator==(const FacetCirculator &other) const;
+    bool operator!=(const FacetCirculator &other) const;
+    static LocalFacetHandle next_around_edge(LocalVertexHandle i, LocalVertexHandle j);
+
+   private:
+    const Delaunay &_tessellation;
+    SignedVertexHandle _s;
+    SignedVertexHandle _t;
+    CellHandle _pos;
+  };
 
   class Delaunay {
    public:
     Delaunay() = default;
 
-    void init()
-    {
-      GEO::initialize();
-      GEO::set_assert_mode(GEO::ASSERT_ABORT);
+    void init();
 
-      _dt = GEO::Delaunay::create(3, "BDEL");
-      _dt->set_keeps_infinite(true);
-      // required for next around vertex
-      _dt->set_stores_cicl(true);
-      _dt->set_stores_neighbors(true);
-      _dt->set_reorder(true);
-      _init = true;
-    }
     void generateTessellation(size_t nlocal, size_t nghost, const double *const points,
-                              const tagint *const tags)
-    {
-      _nlocal = nlocal;
-      _nghost = nghost;
-      _tags = tags;
+                              const tagint *const tags);
 
-      if (!_init) { init(); }
-      std::srand(1323);
-      GEO::Numeric::random_reset();
+    const GEO::Delaunay *const get() const;
 
-      _dt->set_vertices(_nlocal + _nghost, points);
+    size_t numCells() const;
+    size_t numFiniteCells() const;
+    size_t numVertices() const;
+    size_t numOwnedCells() const;
 
-      _setOwned();
-      _setRequired();
-
-      _validCells.clear();
-      _validCells.resize(numCells(), CellValidity::UNPROCESSED);
-
-      _isValid = true;
-    }
-
-    const GEO::Delaunay *const get() const { return _dt; };
-
-    size_t numCells() const { return _dt->nb_cells(); };
-    size_t numFiniteCells() const { return _dt->nb_finite_cells(); };
-    size_t numVertices() const { return _dt->nb_vertices(); };
-    size_t numOwnedCells() const
-    {
-      size_t count = 0;
-      for (size_t cell = 0; cell < numCells(); ++cell) { count += cellIsOwned(cell); }
-      return count;
-    };
-    size_t numOwnedFacets() const { return _numOwnedFacets; };
+    size_t numOwnedFacets() const;
 
     // takes a local facet index [0,4) and a local index around that facet [0,3) and returns the
     // local index into the cell
-    size_t facetLocalVertex(size_t facet, size_t localIdx) const
-    {
-      return _facetMap[facet][localIdx];
-    }
-    int facetVertex(size_t cell, size_t facet, size_t localIdx) const
-    {
-      return cellVertex(cell, facetLocalVertex(facet, localIdx));
-    }
-    int cellVertex(size_t cell, size_t localIdx) const { return _dt->cell_vertex(cell, localIdx); }
+    LocalVertexHandle facetLocalVertex(LocalFacetHandle facet, LocalVertexHandle localIdx) const;
+
+    LocalVertexHandle localVertexIndex(CellHandle cell, SignedVertexHandle vertex) const;
+
+    SignedVertexHandle facetVertex(CellHandle cell, LocalFacetHandle facet,
+                                   LocalVertexHandle localIdx) const;
+
+    SignedVertexHandle cellVertex(CellHandle cell, LocalVertexHandle localIdx) const;
 
     // Takes a cell and facet index [0,4) and returns the cell on the opposite side of that facet
-    int oppositeCell(size_t cell, size_t facet) const { return _dt->cell_adjacent(cell, facet); }
+    SignedCellHandle oppositeCell(CellHandle cell, LocalFacetHandle facet) const;
 
-    double getVertexPos(size_t gVertexIndex, size_t coord) const
-    {
-      // x -> coord == 0, y -> coord == 1, z -> coord == 2
-      return *(_dt->vertex_ptr(gVertexIndex) + coord);
-    }
-    Vector3d getVertexPos(size_t gVertexIndex) const
-    {
-      return {*(_dt->vertex_ptr(gVertexIndex)), *(_dt->vertex_ptr(gVertexIndex) + 1),
-              *(_dt->vertex_ptr(gVertexIndex) + 2)};
-    }
+    double getVertexPos(VertexHandle vertexIndex, size_t coord) const;
 
-    bool cellIsFinite(size_t cell) const { return _dt->cell_is_finite(cell); }
-    bool cellIsOwned(size_t cell) const
-    {
-      // cell is owned if one or more of its facets are owned
-      // cells can be owned by multiple processors
-      // facets can only be owned by one processor
-      for (size_t facet = 0; facet < 4; ++facet) {
-        if (facetIsOwned(cell, facet)) { return true; }
-      }
-      return false;
-    }
+    Vector3d getVertexPos(VertexHandle vertexIndex) const;
 
-    bool cellIsRequired(size_t cell) const { return _requiredCells[cell]; }
-    bool vertexIsRequired(size_t vertex) const { return _requiredVertices[vertex]; }
+    bool cellIsFinite(CellHandle cell) const;
+    bool cellIsOwned(CellHandle cell) const;
 
-    CellValidity cellIsValid(size_t cell) const
-    {
-      // if (cellIsFinite(cell)) { return _validCells[cell]; }
-      // return CellValidity::INFINITE;
-      return _validCells[cell];
-    }
-    void setCellIsValid(size_t cell, CellValidity valid)
-    {
-      assert(cell < _validCells.size());
-      _validCells[cell] = valid;
-    }
+    bool cellIsRequired(CellHandle cell) const;
+    bool vertexIsRequired(VertexHandle vertex) const;
 
-    bool facetIsOwned(size_t cell, size_t facet) const { return _facetOwnership[4 * cell + facet]; }
+    CellValidity cellIsValid(CellHandle cell) const;
 
-    bool isValid() const { return _isValid; }
+    void setCellIsValid(CellHandle cell, CellValidity valid);
+
+    bool facetIsOwned(CellHandle cell, LocalFacetHandle facet) const;
+
+    bool isValid() const;
 
     enum class AlphaTestResult { INSIDE, OUTSIDE, UNRELIABLE };
-    AlphaTestResult alphaTest(size_t cell, double alpha) const
-    {
-      std::array<Vector3d, 4> cellVerts;
-      for (size_t vert = 0; vert < 4; ++vert) {
-        cellVerts[vert] = getVertexPos(cellVertex(cell, vert));
-      }
-      Sphere<double> s{cellVerts[0], cellVerts[1], cellVerts[2], cellVerts[3]};
-      assert(s.valid() || s.unreliable());
-      if (s.unreliable()) { return AlphaTestResult::UNRELIABLE; }
-      return (s.radius() < alpha) ? AlphaTestResult::INSIDE : AlphaTestResult::OUTSIDE;
-    }
+
+    AlphaTestResult alphaTest(CellHandle cell, double alpha) const;
 
    private:
-    void _setRequired()
-    {
-      // a cell is required if that cell is owned or has a neighbor that is owned by the current domain
-      bool isRequired;
-      _requiredCells.clear();
-      _requiredCells.resize(numCells(), false);
-      for (size_t cell = 0; cell < numCells(); ++cell) {
-        isRequired = cellIsOwned(cell);
-        if (!isRequired) {
-          for (size_t facet = 0; facet < 4; ++facet) {
-            int oppCell = oppositeCell(cell, facet);
-            assert(oppCell != -1);
-            isRequired = cellIsOwned(oppCell);
-            if (isRequired) { break; }
-          }
-        }
-        _requiredCells[cell] = isRequired;
-      }
+    void _setRequired();
 
-      _requiredVertices.clear();
-      _requiredVertices.resize(numVertices(), false);
-      std::vector<bool> processed;
-      processed.resize(numVertices(), false);
-      for (size_t cell = 0; cell < numCells(); ++cell) {
-        for (size_t lv = 0; lv < 4; ++lv) {
-          int gv = cellVertex(cell, lv);
-          if (gv == -1) { continue; }
-          if (processed[gv]) { continue; }
-          processed[gv] = true;
-          _requiredVertices[gv] = _requiredCells[cell];
-          if (_requiredVertices[gv]) { continue; }
+    void _setOwned();
 
-          int incCell = _dt->next_around_vertex(cell, lv);
-          while (incCell != -1 && incCell != cell && !_requiredVertices[gv]) {
-            _requiredVertices[gv] = _requiredCells[incCell];
-            incCell = _dt->next_around_vertex(incCell, _dt->index(incCell, gv));
-          }
-        }
-      }
-    }
-
-    void _setOwned()
-    {
-      bool isOwned;
-      _facetOwnership.resize(4 * numCells());
-      size_t idx = 0;
-      _numOwnedFacets = 0;
-      for (size_t cell = 0; cell < numCells(); ++cell) {
-        for (size_t facet = 0; facet < 4; ++facet) {
-          isOwned = _facetIsOwned(cell, facet);
-          _facetOwnership[idx++] = isOwned;
-          _numOwnedFacets += isOwned;
-        }
-      }
-      assert(std::count(_facetOwnership.begin(), _facetOwnership.end(), true) == _numOwnedFacets);
-    };
-
-    bool _facetIsOwned(size_t cell, size_t facet) const
-    {
-      // // a facet is owned if the majority of its vertices is owned
-      // // facets can only be owned by one processor
-      int ownedCount = 0;
-      for (size_t lv = 0; lv < 3; ++lv) {
-        int vert = facetVertex(cell, facet, lv);
-        ownedCount += vert >= 0 && vert < _nlocal;
-      }
-      return ownedCount >= 2;
-    }
+    bool _facetIsOwned(CellHandle cell, LocalFacetHandle facet) const;
 
    private:
     bool _init = false;
@@ -221,12 +128,6 @@ namespace FIXDXA_NS {
     size_t _nghost;
     GEO::Delaunay *_dt = nullptr;
     const tagint *_tags = nullptr;
-    static constexpr size_t _facetMap[4][3] = {
-        {1, 3, 2},
-        {0, 2, 3},
-        {0, 3, 1},
-        {0, 1, 2},
-    };
     // static constexpr size_t _facetMap[4][3] = {{0, 1, 2}, {1, 3, 2}, {0, 2, 3}, {0, 3, 1}};
     std::vector<bool> _facetOwnership;
     std::vector<CellValidity> _validCells;

@@ -150,7 +150,7 @@ namespace FIXDXA_NS {
   // TODO -> MAKE THESE ENUM CLASSES
   enum StructureType : int { BCC = 0, CUBIC_DIA, FCC, HCP, HEX_DIA, OTHER, MAXSTRUCTURECOUNT };
   enum ClusterStatus : tagint { INVALID = -1 };
-  enum CommSteps { STRUCTURE, STRUCTURE_NEIGHS, CLUSTER, DISPLACEMENT, NOCOM };
+  enum CommSteps { STRUCTURE, STRUCTURE_NEIGHS, CLUSTER, DISPLACEMENT, EXPORTMASK, NOCOM };
 
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   // SYMMETRYPERMUTATION
@@ -438,13 +438,15 @@ namespace FIXDXA_NS {
       return applyTransition(clusterId2, clusterId1, vector);
     }
 
-    // TODO: DynamicDisjointSet vs DisjointSet
+#if 0
+    TODO: DynamicDisjointSet vs DisjointSet
     DynamicDisjointSet<tagint> getDynamicDisjointSet() const
     {
       DynamicDisjointSet<tagint> ds;
       for (const auto &t : _transitions) { ds.unite(t.cluster1, t.cluster2); }
       return ds;
     }
+#endif
 
     DisjointSet<tagint> getDisjointSet() const
     {
@@ -461,6 +463,16 @@ namespace FIXDXA_NS {
     std::vector<Cluster> _clusters;
     std::vector<ClusterTransition> _transitions;
     std::vector<std::pair<tagint, tagint>> _disconnected;
+  };
+
+  //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  // TriangleForExport
+  //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  struct Triangle {
+    std::array<tagint, 3> verts;
+    std::array<tagint, 3> adjVerts;
+    std::array<tagint, 3> cluster;
+    std::array<std::array<double, 3>, 3> edgeVectors;
   };
 
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -493,7 +505,10 @@ namespace FIXDXA_NS {
     int pack_forward_comm(int, int *, double *, int, int *) override;
     void unpack_forward_comm(int, int, double *) override;
 
-    const unsigned char VERSION = 1;
+    int pack_reverse_comm(int, int, double *) override;
+    void unpack_reverse_comm(int, int *, double *) override;
+
+    const int VERSION = 1;
 
    private:
     // Structure Identification
@@ -539,7 +554,7 @@ namespace FIXDXA_NS {
     bool classifyElasticCompatible(size_t) const;
     int classifyCell(size_t) const;
     void classifyRegions();
-    void constructMesh() const;
+    void constructMesh();
 
    private:
     static constexpr size_t _maxNeighCount = 16;
@@ -571,6 +586,7 @@ namespace FIXDXA_NS {
     // -2 -> cell is not filled
     // -3 -> cell is not requred
     std::vector<int> _regions;
+    std::vector<int> _mask;
 
     // std::unique_ptr<Delaunay> _dt = nullptr;
     Delaunay _dt;

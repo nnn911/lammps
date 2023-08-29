@@ -39,6 +39,7 @@
 
 namespace LAMMPS_NS {
 namespace FIXDXA_NS {
+
   [[noreturn]] static void unreachable(LAMMPS *lmp)
   {
 #ifndef NDEBUG
@@ -1513,7 +1514,7 @@ namespace FIXDXA_NS {
     rbuf.resize(nprocs);
     MPI_Allgather(&sbuf, 1, MPI_INT, rbuf.data(), 1, MPI_INT, world);
 
-    const std::string fname = fmt::format("cluster_transition.bin.data", me);
+    const std::string fname = "cluster_transition.bin.data";
     MPI_File outFile;
     MPI_File_open(world, fname.c_str(), MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &outFile);
 
@@ -1705,6 +1706,44 @@ namespace FIXDXA_NS {
     }
   }
 
+  int FixDXA::pack_reverse_comm(int n, int first, double *buf)
+  {
+    int m = 0;
+    int last = first + n;
+    switch (_commStep) {
+      case EXPORTMASK:
+        for (int i = first; i < last; ++i) {
+          assert(i < _mask.size());
+          buf[m++] = ubuf(_mask[i]).d;
+        }
+        break;
+      default:
+        unreachable(lmp);
+        break;
+        return 0;
+    }
+    return m;
+  }
+
+  void FixDXA::unpack_reverse_comm(int n, int *list, double *buf)
+  {
+    assert(n < atom->nlocal);
+    int m = 0;
+    int j;
+    switch (_commStep) {
+      case EXPORTMASK:
+        for (int i = 0; i < n; ++i) {
+          j = list[i];
+          assert(j < _mask.size());
+          _mask[j] |= ubuf(buf[m++]).i;
+        }
+        break;
+      default:
+        unreachable(lmp);
+        break;
+    }
+  }
+
   /*++++++++++++++++++++++++++++++++++++++++++++++++++++
    _____                  _ _       _   _             
   |_   _|                | | |     | | (_)            
@@ -1725,11 +1764,14 @@ namespace FIXDXA_NS {
     const int sbuf = (int) _dt.numOwnedFacets();
     std::vector<int> rbuf;
     rbuf.resize(nprocs);
+    // TODO replace this with MPI_Scan + MPI_Bcast(from last proc) -> check RestartMPIIO::write
     MPI_Allgather(&sbuf, 1, MPI_INT, rbuf.data(), 1, MPI_INT, world);
 
     const std::string fname = fmt::format("facets.bin.data", me);
     MPI_File outFile;
     MPI_File_open(world, fname.c_str(), MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &outFile);
+
+    // TODO call MPI_File_set_size to truncate to correct length
 
     const size_t headerSize = (me == 0) ? 0 : 1;
     const size_t entryCount = std::accumulate(rbuf.begin(), rbuf.begin() + me, (size_t) 0);
@@ -2260,6 +2302,19 @@ namespace FIXDXA_NS {
     for (size_t edgeIdx = 0; edgeIdx < _edges.size(); ++edgeIdx) {
       const Edge &edge = _edges[edgeIdx];
 
+      // bool debugThis = false;
+      // {
+      //   static const std::array<tagint, 4> tIDs{{3487, 3495, 10582, 10583}};
+      //   // static const std::array<tagint, 3> tIDs{{15, 5638, 5661}};
+      //   if (std::find(tIDs.begin(), tIDs.end(), atom->tag[edge.a]) != tIDs.end() &&
+      //       std::find(tIDs.begin(), tIDs.end(), atom->tag[edge.b]) != tIDs.end()) {
+      //     debugThis = true;
+      //   }
+      //   // if (std::find(tIDs.begin(), tIDs.end(), atom->tag[edge.a]) != tIDs.end()) {
+      //   //   debugThis = true;
+      //   // }
+      // }
+
       size_t cluster1Id = _atomClusterType[edge.a];
       size_t cluster2Id = _atomClusterType[edge.b];
       assert(cluster1Id != INVALID && cluster2Id != INVALID);
@@ -2276,6 +2331,13 @@ namespace FIXDXA_NS {
       } else {
         std::tie(idealVector, idealCluster) = findPath(edge.a, edge.b, 4);
       }
+
+      // if (debugThis) {
+      //   debugLog(lmp, "Rank: {} v1: {} v2: {} c1: {} c2: {} ci: {} v: {} {} {}\n", me,
+      //            atom->tag[edge.a], atom->tag[edge.b], cluster1Id, cluster2Id, idealCluster,
+      //            idealVector[0], idealVector[1], idealVector[2]);
+      // }
+
       if (idealCluster == -1) { continue; }
 
       if (cluster1Id == cluster2Id && cluster1Id == idealCluster) {
@@ -2462,6 +2524,17 @@ namespace FIXDXA_NS {
     _regions.resize(_dt.numCells(), -3);
     double alpha = 5 * _maxNeighDistance;
     for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+      bool debugThis = false;
+      {
+
+        static const std::array<tagint, 4> tIDs{{3487, 10582, 10583, 10584}};
+        // static const std::array<tagint, 4> tIDs{{3484, 3487, 3495, 10582}};
+        std::array<tagint, 4> IDs{
+            {atom->tag[_dt.cellVertex(cell, 0)], atom->tag[_dt.cellVertex(cell, 1)],
+             atom->tag[_dt.cellVertex(cell, 2)], atom->tag[_dt.cellVertex(cell, 3)]}};
+        std::sort(IDs.begin(), IDs.end());
+        debugThis = tIDs == IDs;
+      }
       if (!_dt.cellIsRequired(cell)) { continue; }
       assert(_dt.cellIsValid(cell) != CellValidity::INVALID);
 
@@ -2474,6 +2547,7 @@ namespace FIXDXA_NS {
             break;
           }
           case Delaunay::AlphaTestResult::OUTSIDE: {
+            isFilled = false;
             break;
           }
           case Delaunay::AlphaTestResult::UNRELIABLE: {
@@ -2502,6 +2576,11 @@ namespace FIXDXA_NS {
       } else {
         _regions[cell] = -2;
       }
+
+      if (debugThis) {
+        debugLog(lmp, "rank: {} filled: {} region: {} owned: {}\n", me, isFilled, _regions[cell],
+                 _dt.cellIsOwned(cell));
+      }
     }
     debugLog(lmp, "End of classifyRegions() on rank {}\n", me);
   }
@@ -2516,67 +2595,351 @@ namespace FIXDXA_NS {
     return idx;
   }
 
-  void FixDXA::constructMesh() const
+  void FixDXA::constructMesh()
   {
     debugLog(lmp, "Start of constructMesh() on rank {}\n", me);
     assert(_regions.size() == _dt.numCells());
-    std::vector<int> remappedIdx;
-    remappedIdx.resize(atom->nlocal + atom->nghost, -1);
-    std::vector<int> triangles;
-    std::vector<int> triangleRegions;
+
     // Todo: good heuristic
     size_t prealloc = std::count_if(_structureType.begin(), _structureType.begin() + atom->nlocal,
                                     [](StructureType s) {
                                       return s == OTHER;
                                     });
+
+    _mask.clear();
+    _mask.resize(atom->nlocal + atom->nghost, 0);
+
+    // Todo: good heuristic
+    std::vector<Triangle> triangles;
     triangles.reserve(prealloc);
 
-    DisjointSet<tagint> transitionsDS = _clusterGraph.getDisjointSet();
+    // If we own the real and image of a tag, the real one needs to be exported
+    // Todo find a better solution
+    auto sortedTags = std::vector<tagint>(&(atom->tag[0]), &(atom->tag[atom->nlocal]));
+    assert(sortedTags.size() == atom->nlocal);
+    std::vector<size_t> order = argsort(sortedTags);
+    std::sort(sortedTags.begin(), sortedTags.end());
 
-    int vertexCount = 0;
-    for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+    for (CellHandle cell = 0; cell < _dt.numCells(); ++cell) {
+
+      bool debugThis = false;
+      {
+
+        // static const std::array<tagint, 4> tIDs{{3487, 10582, 10583, 10584}};
+        static const std::array<tagint, 4> tIDs{{3484, 3487, 3495, 10582}};
+        std::array<tagint, 4> IDs{
+            {atom->tag[_dt.cellVertex(cell, 0)], atom->tag[_dt.cellVertex(cell, 1)],
+             atom->tag[_dt.cellVertex(cell, 2)], atom->tag[_dt.cellVertex(cell, 3)]}};
+        std::sort(IDs.begin(), IDs.end());
+        debugThis = tIDs == IDs;
+      }
+      if (debugThis) {
+        debugLog(lmp, "rank: {} cell: {}: region: {} required: {} owned: {}\n", me, cell,
+                 _regions[cell], _dt.cellIsRequired(cell), _dt.cellIsOwned(cell));
+      }
+
       if (!_dt.cellIsRequired(cell)) { continue; }
-      int rcell = _regions[cell];
-      for (int facet = 0; facet < 4; ++facet) {
+      int cellRegion = _regions[cell];
+      assert(cellRegion != -3);
+      if (cellRegion < 0) { continue; }    // continue if current cell is bad region or surface
+      for (LocalFacetHandle facet = 0; facet < 4; ++facet) {
+        if (debugThis) {
+          debugLog(lmp, "rank: {} region: {} required: {} owned: {} facet: {} owned: {}\n", me,
+                   _regions[cell], _dt.cellIsRequired(cell), _dt.cellIsOwned(cell), facet,
+                   _dt.facetIsOwned(cell, facet));
+        }
+
         if (!_dt.facetIsOwned(cell, facet)) { continue; }
-        assert(rcell != -3);
         int oppositeCell = _dt.oppositeCell(cell, facet);
-        assert(oppositeCell >= 0);
-        assert(oppositeCell < _regions.size());
-        int rocell = _regions[oppositeCell];
-        assert(rocell != -3);
+        assert(oppositeCell >= 0 && oppositeCell < _regions.size());
+        int oppCellRegion = _regions[oppositeCell];
+        assert(oppCellRegion != -3);
 
-        if (rcell == rocell) { continue; }
-        if ((rcell == -1 && rocell == -2) || (rcell == -2 && rocell == -1)) { continue; }
-        if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
+        if (oppCellRegion != -1) { continue; }    // cellRegion is good, oppCellRegion is negativ
 
-        triangles.push_back(transitionsDS.find(rcell));
-        triangles.push_back(transitionsDS.find(rocell));
+        triangles.push_back(Triangle());
+        Triangle &triangle = triangles.back();
 
-        for (int vert = 0; vert < 3; ++vert) {
-          int vertexIndex = _dt.facetVertex(cell, facet, vert);
-          if (remappedIdx[vertexIndex] == -1) { remappedIdx[vertexIndex] = vertexCount++; }
-          triangles.push_back(remappedIdx[vertexIndex]);
+        for (int edge = 0; edge < 3; ++edge) {
+          SignedVertexHandle v1 = _dt.facetVertex(cell, facet, edge);
+          SignedVertexHandle v2 = _dt.facetVertex(cell, facet, (edge + 1) % 3);
+
+          FacetCirculator circulator{_dt, v1, v2, cell, facet};
+          FacetCirculator circulator_start = circulator;
+
+          tagint tagV1 = atom->tag[v1];
+
+          triangle.verts[edge] = tagV1;
+          triangle.cluster[0] = cellRegion;
+          triangle.cluster[1] = oppCellRegion;
+          triangle.cluster[2] = me;
+          _mask[v1] = 1;
+          // mask[v1] = true;
+          // if (v1 < atom->nlocal) {
+          //   mask[v1] = true;
+          // } else {
+          //   const auto pos = std::lower_bound(sortedTags.begin(), sortedTags.end(), tagV1);
+          //   if (*pos == tagV1) {
+          //     size_t idx = order[std::distance(sortedTags.begin(), pos)];
+          //     assert(idx < atom->nlocal);
+          //     assert(atom->tag[idx] == tagV1);
+          //     mask[idx] = true;
+          //   }
+          // }
+
+          // walk through the good region until we hit bad region
+          // TODO -> circulator can hit unprocessed cells!
+          do {
+            --circulator;
+            int adjCellRegion = _regions[circulator.cell()];
+            // assert(adjCellRegion != -3);
+            if (adjCellRegion == -1) { break; }
+          } while (circulator != circulator_start);
+
+          if (circulator.cell() == cell) {
+            // we walked all the way around the ciruclator
+            triangle.adjVerts[edge] = -1;
+          } else {
+            // we found an adjacent triangle
+            CellHandle adjCell = circulator.cell();
+            LocalFacetHandle adjFacet = circulator.facet();
+#ifndef NDEBUG
+            int c = 0;
+            for (LocalVertexHandle lv = 0; lv < 3; ++lv) {
+              SignedVertexHandle v3 = _dt.facetVertex(adjCell, adjFacet, lv);
+              if (v3 != v1 && v3 != v2) {
+                triangle.adjVerts[edge] = atom->tag[v3];
+              } else {
+                ++c;
+              }
+            }
+            assert(c == 2);
+#else
+            for (LocalVertexHandle lv = 0; lv < 3; ++lv) {
+              SignedVertexHandle v3 = _dt.facetVertex(adjCell, adjFacet, lv);
+              if (v3 != v1 && v3 != v2) { triangle.adjVerts[edge] = atom->tag[v3]; }
+            }
+#endif
+          }
         }
       }
     }
-    assert(triangles.size() % 5 == 0);
 
-    const std::vector<size_t> order = argsort(remappedIdx);
+    _commStep = EXPORTMASK;
+    comm->reverse_comm(this, 1);
+    _commStep = NOCOM;
 
-    const std::string fname = fmt::format("triangles_on_rank_{}.xyz", me);
-    std::ofstream outFile(fname);
-    if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
-    outFile << "DXA debug triangle file\n" << vertexCount << '\n';
-    for (size_t i = order.size() - vertexCount; i < order.size(); ++i) {
-      int idx = order[i];    // remappedIdx[order[i]];
-      outFile << fmt::format("{} {} {}\n", atom->x[idx][0], atom->x[idx][1], atom->x[idx][2]);
+    // Rank 0 Header:
+    // version int total num_pts total num_triangles
+    // Per processor
+    // num_pts
+    // n x tag px py pz -> n x
+    // num triangles
+    // m x sizeof(triangle) -> m x ( 9x sizeof(tagint) + 9xsizeof(float) )
+
+    int nprocs;
+    MPI_Comm_size(world, &nprocs);
+    std::vector<double> outbuf;
+
+    {
+      int numPts = std::count(_mask.begin(), _mask.begin() + atom->nlocal, true);
+      int cumNumPts;
+
+      MPI_Scan(&numPts, &cumNumPts, 1, MPI_INT, MPI_SUM, world);
+
+      int cumNumPtsMax = cumNumPts;
+      MPI_Bcast(&cumNumPtsMax, 1, MPI_INT, (nprocs - 1), world);
+
+      const std::string fname = "mesh_points.bin.data";
+      MPI_File outFile;
+      MPI_File_open(world, fname.c_str(), MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL,
+                    &outFile);
+
+      size_t headerSize = 2;
+      const size_t entriesPerPoint = 1 + 3;
+
+      MPI_File_set_size(outFile, (headerSize + cumNumPtsMax * entriesPerPoint) * sizeof(double));
+
+      const MPI_Offset offset =
+          (me == 0) ? 0 : (headerSize + (cumNumPts - numPts) * entriesPerPoint) * sizeof(double);
+      MPI_File_set_view(outFile, offset, MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
+
+      if (me == 0) {
+        outbuf.reserve(entriesPerPoint * numPts + headerSize);
+        outbuf.push_back(ubuf(VERSION).d);
+        outbuf.push_back(ubuf(cumNumPtsMax).d);
+      } else {
+        outbuf.reserve(entriesPerPoint * numPts);
+      }
+      for (size_t i = 0; i < atom->nlocal; ++i) {
+        if (_mask[i] == 0) { continue; }
+        outbuf.push_back(ubuf(atom->tag[i]).d);
+        outbuf.push_back(atom->x[i][0]);
+        outbuf.push_back(atom->x[i][1]);
+        outbuf.push_back(atom->x[i][2]);
+      }
+      if (me == 0) {
+        assert(outbuf.size() == entriesPerPoint * numPts + headerSize);
+      } else {
+        assert(outbuf.size() == entriesPerPoint * numPts);
+      }
+      // TODO: error reporting
+      MPI_File_write_all(outFile, outbuf.data(), outbuf.size(), MPI_DOUBLE, MPI_STATUS_IGNORE);
+      MPI_File_close(&outFile);
     }
-    outFile << triangles.size() / 5 << " triangles\n";
-    for (size_t i = 0; i < triangles.size(); i += 5) {
-      outFile << fmt::format("{} {} {} {} {}\n", triangles[i], triangles[i + 1], triangles[i + 2],
-                             triangles[i + 3], triangles[i + 4]);
+
+    {
+      int numTris = triangles.size();
+      int cumNumTris;
+
+      MPI_Scan(&numTris, &cumNumTris, 1, MPI_INT, MPI_SUM, world);
+
+      int cumNumTrisMax = cumNumTris;
+      MPI_Bcast(&cumNumTrisMax, 1, MPI_INT, (nprocs - 1), world);
+
+      const std::string fname = "mesh_facets.bin.data";
+      MPI_File outFile;
+      MPI_File_open(world, fname.c_str(), MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL,
+                    &outFile);
+
+      // Version
+      // numTriangles
+      // Simualation cell
+      // pbc
+      size_t headerSize = 2 + 4 * 3 + 1;
+      // 3x tags vertices
+      // 3x tags adj vertices
+      // 3x clusters vertices
+      // 3x edge vectors (3 elements)
+      const size_t entriesPerPoint = 3 + 3 + 3 + 3 * 3;
+
+      MPI_File_set_size(outFile, (headerSize + cumNumTrisMax * entriesPerPoint) * sizeof(double));
+
+      const MPI_Offset offset =
+          (me == 0) ? 0 : (headerSize + (cumNumTris - numTris) * entriesPerPoint) * sizeof(double);
+      MPI_File_set_view(outFile, offset, MPI_DOUBLE, MPI_DOUBLE, "native", MPI_INFO_NULL);
+
+      // Simulation cell
+      std::array<Vector3d, 4> dom;
+      if (domain->triclinic == 1) {
+        dom[0] = Vector3d(domain->corners[1]);
+        dom[1] = Vector3d(domain->corners[2]);
+        dom[2] = Vector3d(domain->corners[4]);
+        dom[3] = Vector3d(domain->corners[0]);
+
+        for (size_t i = 0; i < 3; ++i) { dom[i] = dom[i] - dom[3]; }
+      } else {
+        dom[0] = Vector3d(domain->boxhi[0], 0, 0);
+        dom[1] = Vector3d(0, domain->boxhi[1], 0);
+        dom[2] = Vector3d(0, 0, domain->boxhi[2]);
+        dom[3] = Vector3d(domain->boxlo);
+      }
+
+      int pbc = 0;
+      for (size_t i = 0; i < 3; ++i) {
+        auto x = (domain->periodicity[i]) << i;
+        pbc |= (domain->periodicity[i]) << i;
+      }
+
+      // TODO think about packing
+      outbuf.clear();
+      if (me == 0) {
+      outbuf.reserve(entriesPerPoint * numTris + headerSize);
+      outbuf.push_back(ubuf(VERSION).d);
+      outbuf.push_back(ubuf(cumNumTrisMax).d);
+      for (size_t i = 0; i < 4; ++i) {
+          outbuf.push_back(dom[i][0]);
+          outbuf.push_back(dom[i][1]);
+          outbuf.push_back(dom[i][2]);
+      }
+      outbuf.push_back(ubuf(pbc).d);
+      } else {
+      outbuf.reserve(entriesPerPoint * numTris);
+      }
+      for (const auto &tri : triangles) {
+        outbuf.push_back(ubuf(tri.verts[0]).d);
+        outbuf.push_back(ubuf(tri.verts[1]).d);
+        outbuf.push_back(ubuf(tri.verts[2]).d);
+
+        outbuf.push_back(ubuf(tri.adjVerts[0]).d);
+        outbuf.push_back(ubuf(tri.adjVerts[1]).d);
+        outbuf.push_back(ubuf(tri.adjVerts[2]).d);
+
+        outbuf.push_back(ubuf(tri.cluster[0]).d);
+        outbuf.push_back(ubuf(tri.cluster[1]).d);
+        outbuf.push_back(ubuf(tri.cluster[2]).d);
+
+        for (size_t i = 0; i < 3; ++i) {
+          outbuf.push_back(tri.edgeVectors[i][0]);
+          outbuf.push_back(tri.edgeVectors[i][1]);
+          outbuf.push_back(tri.edgeVectors[i][2]);
+        }
+      }
+      if (me == 0) {
+        assert(outbuf.size() == entriesPerPoint * numTris + headerSize);
+      } else {
+        assert(outbuf.size() == entriesPerPoint * numTris);
+      }
+      // TODO: error reporting
+      MPI_File_write_all(outFile, outbuf.data(), outbuf.size(), MPI_DOUBLE, MPI_STATUS_IGNORE);
+      MPI_File_close(&outFile);
     }
+    // int numTris = triangles.size();
+
+    // if (me == 0) {
+    //   MPI_Reduce(MPI_IN_PLACE, &numPts, 1, MPI_INT, MPI_SUM, 0, world);
+    //   MPI_Reduce(MPI_IN_PLACE, &numTris, 1, MPI_INT, MPI_SUM, 0, world);
+    // } else {
+    //   MPI_Reduce(&numPts, &numPts, 1, MPI_INT, MPI_SUM, 0, world);
+    //   MPI_Reduce(&numTris, &numTris, 1, MPI_INT, MPI_SUM, 0, world);
+    // }
+
+    // DisjointSet<tagint> transitionsDS = _clusterGraph.getDisjointSet();
+
+    // int vertexCount = 0;
+    // for (size_t cell = 0; cell < _dt.numCells(); ++cell) {
+    //   if (!_dt.cellIsRequired(cell)) { continue; }
+    //   int rcell = _regions[cell];
+    //   for (int facet = 0; facet < 4; ++facet) {
+    //     if (!_dt.facetIsOwned(cell, facet)) { continue; }
+    //     assert(rcell != -3);
+    //     int oppositeCell = _dt.oppositeCell(cell, facet);
+    //     assert(oppositeCell >= 0);
+    //     assert(oppositeCell < _regions.size());
+    //     int rocell = _regions[oppositeCell];
+    //     assert(rocell != -3);
+
+    //     if (rcell == rocell) { continue; }
+    //     if ((rcell == -1 && rocell == -2) || (rcell == -2 && rocell == -1)) { continue; }
+    //     if (transitionsDS.find(rcell) == transitionsDS.find(rocell)) { continue; }
+
+    //     triangles.push_back(transitionsDS.find(rcell));
+    //     triangles.push_back(transitionsDS.find(rocell));
+
+    //     for (int vert = 0; vert < 3; ++vert) {
+    //       int vertexIndex = _dt.facetVertex(cell, facet, vert);
+    //       if (remappedIdx[vertexIndex] == -1) { remappedIdx[vertexIndex] = vertexCount++; }
+    //       triangles.push_back(remappedIdx[vertexIndex]);
+    //     }
+    //   }
+    // }
+    // assert(triangles.size() % 5 == 0);
+
+    // const std::vector<size_t> order = argsort(remappedIdx);
+
+    // const std::string fname = fmt::format("triangles_on_rank_{}.xyz", me);
+    // std::ofstream outFile(fname);
+    // if (!outFile) { error->all(FLERR, "Could not open {} for write.", fname); }
+    // outFile << "DXA debug triangle file\n" << vertexCount << '\n';
+    // for (size_t i = order.size() - vertexCount; i < order.size(); ++i) {
+    //   int idx = order[i];    // remappedIdx[order[i]];
+    //   outFile << fmt::format("{} {} {}\n", atom->x[idx][0], atom->x[idx][1], atom->x[idx][2]);
+    // }
+    // outFile << triangles.size() / 5 << " triangles\n";
+    // for (size_t i = 0; i < triangles.size(); i += 5) {
+    //   outFile << fmt::format("{} {} {} {} {}\n", triangles[i], triangles[i + 1], triangles[i + 2],
+    //                          triangles[i + 3], triangles[i + 4]);
+    // }
     debugLog(lmp, "End of constructMesh() on rank {}\n", me);
   }
 
